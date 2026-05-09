@@ -1,6 +1,6 @@
 /* global window */
 // Shared helpers + small components.
-
+(() => {
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 function clsx(...parts) {
@@ -42,3 +42,4 @@ function Brand() {
 }
 
 window.RP_SHARED = { clsx, fmtKm, fmtElev, BikeIcon, Pill, Brand };
+})();

@@ -1,6 +1,6 @@
 /* global window, React, L */
 // Tour planner: form + Leaflet map with OpenRouteService routing.
-
+(() => {
 const { useState, useEffect, useRef, useCallback } = React;
 
 // ---------- ORS API helpers ----------
@@ -548,3 +548,4 @@ function Tour({ tweaks }) {
 }
 
 window.RP_Tour = Tour;
+})();

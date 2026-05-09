@@ -1,6 +1,6 @@
 /* global window */
 // Static data: zones, sample week, demo waypoints.
-
+(() => {
 const ZONES = [
   { id: "Z1", name: "Recovery",    range: "<55% FTP",   color: "#9bd1a4" },
   { id: "Z2", name: "Endurance",   range: "55-75% FTP", color: "#4cc9f0" },
@@ -65,3 +65,4 @@ const DEMO_TOUR = {
 };
 
 window.RP_DATA = { ZONES, SAMPLE_WEEK, SAMPLE_WORKOUT, PLAN_VOLUME, DEMO_TOUR };
+})();
