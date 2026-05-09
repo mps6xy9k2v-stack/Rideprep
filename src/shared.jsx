@@ -36,7 +36,7 @@ function Brand() {
   return (
     <div className="brand">
       <span className="brand-mark"><BikeIcon /></span>
-      <span className="brand-name">Cadence</span>
+      <span className="brand-name">Ride Prep</span>
     </div>
   );
 }
