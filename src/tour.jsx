@@ -358,7 +358,7 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
           return (
             <React.Fragment key={i}>
               <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
-                <div style={{ width: 16, display: "grid", placeItems: "center", paddingTop: 18 }}>
+                <div style={{ width: 16, display: "grid", placeItems: "center" }}>
                   <StopMarker kind={kind} />
                 </div>
                 <div className="input-field" style={{ flex: 1 }}>
