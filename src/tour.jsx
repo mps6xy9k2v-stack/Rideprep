@@ -393,25 +393,21 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
               </div>
 
               {i < stops.length - 1 && (
-                <div style={{ display: "flex", gap: 10, paddingLeft: 26 }}>
+                <div style={{ display: "flex", paddingLeft: 4, height: 14 }}>
                   <button
                     onClick={() => addStop(i)}
                     aria-label="Add a stop here"
+                    title="Add a stop here"
                     style={{
-                      flex: 1,
-                      padding: "4px 10px",
-                      borderRadius: 100,
+                      width: 18, height: 18,
+                      borderRadius: "50%",
                       border: "1px dashed var(--line-strong)",
                       color: "var(--fg-dim)",
-                      fontSize: 11,
-                      fontFamily: "var(--mono)",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      textAlign: "left",
+                      fontSize: 12, lineHeight: 1,
+                      display: "grid", placeItems: "center",
+                      padding: 0,
                     }}
-                  >
-                    + Add stop
-                  </button>
+                  >+</button>
                 </div>
               )}
             </React.Fragment>
