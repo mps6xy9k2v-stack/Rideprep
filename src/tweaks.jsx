@@ -1,6 +1,6 @@
 /* global window, React */
 // Floating settings panel: theme, units, density, accent, map style.
-
+(() => {
 const { useState, useEffect } = React;
 
 const ACCENTS = ["#4cc9f0", "#9bd1a4", "#f4b860", "#e07a5f", "#c45a8a"];
@@ -118,3 +118,4 @@ function Tweaks({ tweaks, setTweaks }) {
 }
 
 window.RP_Tweaks = Tweaks;
+})();

@@ -1,6 +1,6 @@
 /* global window, React */
 // Training view: goal form, plan hero, week grid, workout detail.
-
+(() => {
 const { useState, useMemo } = React;
 
 function GoalForm({ goal, setGoal }) {
@@ -277,3 +277,4 @@ function Training({ goal, setGoal }) {
 }
 
 window.RP_Training = Training;
+})();

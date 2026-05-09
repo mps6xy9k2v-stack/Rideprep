@@ -1,6 +1,6 @@
 /* global window, React, ReactDOM */
 // Root component: header tabs + active view + floating tweaks panel.
-
+(() => {
 const { useState } = React;
 
 function App() {
@@ -72,3 +72,4 @@ function App() {
 // else has registered onto window.
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
+})();
