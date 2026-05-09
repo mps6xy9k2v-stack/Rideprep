@@ -27,7 +27,7 @@ async function orsReverse(lat, lng, key) {
   return f.properties.locality || f.properties.name || f.properties.label;
 }
 
-async function orsDirections(from, to, key) {
+async function orsDirections(waypoints, key) {
   const url = `${ORS_BASE}/v2/directions/cycling-regular/geojson`;
   const r = await fetch(url, {
     method: "POST",
@@ -37,7 +37,7 @@ async function orsDirections(from, to, key) {
       "Accept": "application/json, application/geo+json",
     },
     body: JSON.stringify({
-      coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
+      coordinates: waypoints.map((w) => [w.lng, w.lat]),
       elevation: true,
       instructions: false,
     }),
@@ -125,6 +125,37 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
   });
 
   return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent: Math.round(totalAscent) };
+}
+
+// Split a multi-waypoint route into daily stages, leg by leg.
+// `wayPointIdx` is the array of coord indices that ORS returns under
+// `properties.way_points` — one entry per requested waypoint.
+async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key) {
+  const allStages = [];
+  let totalKm = 0;
+  let totalAscent = 0;
+
+  for (let leg = 0; leg < wayPointIdx.length - 1; leg++) {
+    const start = wayPointIdx[leg];
+    const end = wayPointIdx[leg + 1];
+    const segCoords = coords.slice(start, end + 1);
+    if (segCoords.length < 2) continue;
+
+    const split = await splitIntoStages(
+      segCoords, dailyKm, stopLabels[leg], stopLabels[leg + 1], key
+    );
+
+    // Re-base stage indices to be relative to the full coords array.
+    split.stages.forEach((s) => {
+      s.startIdx += start;
+      s.endIdx += start;
+    });
+
+    allStages.push(...split.stages);
+    totalKm += split.totalKm;
+    totalAscent += split.totalAscent;
+  }
+  return { stages: allStages, totalKm, totalAscent };
 }
 
 function estHours(km, ascent) {
@@ -295,9 +326,22 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
 }
 
 // ---------- Tour form ----------
-function TourForm({ from, setFrom, to, setTo, dailyKm, setDailyKm, budget, setBudget, onPlan, loading, error }) {
-  const swap = () => { const t = from; setFrom(to); setTo(t); };
+function StopMarker({ kind }) {
+  // kind: "start" | "mid" | "end"
+  const base = {
+    width: 12, height: 12, borderRadius: "50%",
+    flexShrink: 0,
+  };
+  if (kind === "start") {
+    return <div style={{ ...base, background: "var(--accent)", boxShadow: "0 0 0 3px color-mix(in oklch, var(--accent) 22%, transparent)" }} />;
+  }
+  if (kind === "end") {
+    return <div style={{ ...base, background: "transparent", border: "2px solid var(--accent)" }} />;
+  }
+  return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
+}
 
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, loading, error }) {
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -305,18 +349,74 @@ function TourForm({ from, setFrom, to, setTo, dailyKm, setDailyKm, budget, setBu
         <span className="sub">Cycling route</span>
       </div>
 
-      <div className="from-to">
-        <div className="input-field">
-          <label>From</label>
-          <input value={from} onChange={(e) => setFrom(e.target.value)} placeholder="City, country" />
-        </div>
-        <button className="swap-btn" onClick={swap} aria-label="Swap from/to">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
-        </button>
-        <div className="input-field">
-          <label>To</label>
-          <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="City, country" />
-        </div>
+      <div style={{ display: "grid", gap: 4, position: "relative" }}>
+        {stops.map((stop, i) => {
+          const isFirst = i === 0;
+          const isLast = i === stops.length - 1;
+          const kind = isFirst ? "start" : isLast ? "end" : "mid";
+          const label = isFirst ? "From" : isLast ? "To" : `Stop ${i}`;
+          return (
+            <React.Fragment key={i}>
+              <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+                <div style={{ width: 16, display: "grid", placeItems: "center", paddingTop: 18 }}>
+                  <StopMarker kind={kind} />
+                </div>
+                <div className="input-field" style={{ flex: 1 }}>
+                  <label>{label}</label>
+                  <input
+                    value={stop}
+                    onChange={(e) => setStop(i, e.target.value)}
+                    placeholder="City, country"
+                  />
+                </div>
+                {!isFirst && !isLast && (
+                  <button
+                    onClick={() => removeStop(i)}
+                    aria-label={`Remove ${label}`}
+                    style={{
+                      width: 30, height: 30, alignSelf: "center",
+                      borderRadius: "50%", border: "1px solid var(--line)",
+                      color: "var(--fg-dim)", fontSize: 16, lineHeight: 1,
+                    }}
+                  >×</button>
+                )}
+                {isFirst && stops.length === 2 && (
+                  <button
+                    className="swap-btn"
+                    onClick={swapEnds}
+                    aria-label="Swap from/to"
+                    style={{ alignSelf: "center", margin: 0 }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+                  </button>
+                )}
+              </div>
+
+              {i < stops.length - 1 && (
+                <div style={{ display: "flex", gap: 10, paddingLeft: 26 }}>
+                  <button
+                    onClick={() => addStop(i)}
+                    aria-label="Add a stop here"
+                    style={{
+                      flex: 1,
+                      padding: "4px 10px",
+                      borderRadius: 100,
+                      border: "1px dashed var(--line-strong)",
+                      color: "var(--fg-dim)",
+                      fontSize: 11,
+                      fontFamily: "var(--mono)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      textAlign: "left",
+                    }}
+                  >
+                    + Add stop
+                  </button>
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
       </div>
 
       <div className="range-row">
@@ -462,20 +562,39 @@ function SummaryBar({ tour, units }) {
 
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
-  const [from, setFrom] = useState("Munich, DE");
-  const [to, setTo] = useState("Innsbruck, AT");
+  const [stops, setStops] = useState(["Munich, DE", "Innsbruck, AT"]);
   const [dailyKm, setDailyKm] = useState(60);
   const [budget, setBudget] = useState("mid");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
 
+  const setStop = useCallback((i, value) => {
+    setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
+  }, []);
+  const addStop = useCallback((afterIdx) => {
+    setStops((prev) => {
+      const next = [...prev];
+      next.splice(afterIdx + 1, 0, "");
+      return next;
+    });
+  }, []);
+  const removeStop = useCallback((i) => {
+    setStops((prev) => (prev.length > 2 ? prev.filter((_, idx) => idx !== i) : prev));
+  }, []);
+  const swapEnds = useCallback(() => {
+    setStops((prev) => {
+      const next = [...prev];
+      [next[0], next[next.length - 1]] = [next[next.length - 1], next[0]];
+      return next;
+    });
+  }, []);
+
   // Demo geometry (just connect the demo waypoints) when no API key
   const { DEMO_TOUR } = window.RP_DATA;
   const initialDemo = useCallback(() => {
     const wps = DEMO_TOUR.waypoints;
     const geom = wps.map((w) => [w.lng, w.lat, 0]);
-    // Map stage indexes onto geom indices (each waypoint = one segment end)
     const stages = DEMO_TOUR.stages.map((s, i) => ({
       ...s,
       startIdx: i,
@@ -499,33 +618,44 @@ function Tour({ tweaks }) {
     setError(null);
     setLoading(true);
     try {
+      const cleanStops = stops.map((s) => s.trim()).filter(Boolean);
+      if (cleanStops.length < 2) {
+        throw new Error("Need at least a From and To.");
+      }
+
       if (!key) {
-        // No key: rebuild fallback for whatever from/to is shown, but
-        // we can't compute geometry without an API. Just keep the demo.
         const t = initialDemo();
-        setTour({ ...t, from, to });
+        setTour({ ...t, from: cleanStops[0], to: cleanStops[cleanStops.length - 1] });
         setGeometry(t._geom);
         setError("No API key set — using demo route. Set window.__ORS_API_KEY__ to use real routing.");
         return;
       }
-      const [a, b] = await Promise.all([orsGeocode(from, key), orsGeocode(to, key)]);
-      const fc = await orsDirections(a, b, key);
+
+      const geo = await Promise.all(cleanStops.map((s) => orsGeocode(s, key)));
+      const labels = geo.map((g, i) => g.label || cleanStops[i]);
+      const fc = await orsDirections(geo, key);
       const feature = fc.features && fc.features[0];
       if (!feature) throw new Error("No route returned");
-      const coords = feature.geometry.coordinates; // [[lng,lat,elev?], ...]
+      const coords = feature.geometry.coordinates;
       const summary = feature.properties && feature.properties.summary;
-      const split = await splitIntoStages(coords, dailyKm, a.label || from, b.label || to, key);
-      // Attach hotels
-      split.stages = split.stages.map((s) => ({
+      let wayPointIdx = feature.properties && feature.properties.way_points;
+      if (!wayPointIdx || wayPointIdx.length !== geo.length) {
+        wayPointIdx = [0, coords.length - 1];
+      }
+
+      const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
+      itin.stages = itin.stages.map((s) => ({
         ...s,
         ...makeFakeHotel(s.to, budget),
       }));
+
       setTour({
-        from: a.label || from,
-        to: b.label || to,
-        stages: split.stages,
-        totalKm: split.totalKm,
-        totalAscent: split.totalAscent,
+        from: labels[0],
+        to: labels[labels.length - 1],
+        stops: labels,
+        stages: itin.stages,
+        totalKm: itin.totalKm,
+        totalAscent: itin.totalAscent,
         meters: summary && summary.distance,
         seconds: summary && summary.duration,
       });
@@ -536,7 +666,7 @@ function Tour({ tweaks }) {
     } finally {
       setLoading(false);
     }
-  }, [from, to, dailyKm, budget, initialDemo]);
+  }, [stops, dailyKm, budget, initialDemo]);
 
   return (
     <div className="fade-in">
@@ -544,8 +674,7 @@ function Tour({ tweaks }) {
       <div className="tour-layout">
         <div className="stack" style={{ gap: 16 }}>
           <TourForm
-            from={from} setFrom={setFrom}
-            to={to} setTo={setTo}
+            stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             budget={budget} setBudget={setBudget}
             onPlan={planRoute}
