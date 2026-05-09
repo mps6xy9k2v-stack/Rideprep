@@ -143,58 +143,64 @@ function makeFakeHotel(cityName, budget) {
 }
 
 // ---------- Map subcomponent ----------
+function makeTileLayer(style) {
+  switch (style) {
+    case "cyclosm":
+      return L.tileLayer("https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png", {
+        maxZoom: 18,
+        attribution: '&copy; <a href="https://www.cyclosm.org">CyclOSM</a> &middot; OSM',
+        subdomains: "abc",
+      });
+    case "light":
+      return L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://carto.com/">Carto</a> &middot; OSM',
+        subdomains: "abcd",
+      });
+    case "dark":
+      return L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://carto.com/">Carto</a> &middot; OSM',
+        subdomains: "abcd",
+      });
+    case "voyager":
+      return L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://carto.com/">Carto</a> &middot; OSM',
+        subdomains: "abcd",
+      });
+    case "osm":
+    default:
+      return L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap',
+      });
+  }
+}
+
 function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
   const elRef = useRef(null);
   const mapRef = useRef(null);
+  const tileRef = useRef(null);
   const layersRef = useRef({ route: null, markers: [] });
 
-  // Init once
+  // Init the map once.
   useEffect(() => {
     const map = L.map(elRef.current, { zoomControl: true, attributionControl: true });
     map.setView([47.6, 11.5], 8);
     mapRef.current = map;
-
-    const tile = (() => {
-      switch (mapStyle) {
-        case "cyclosm":
-          return L.tileLayer("https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png", {
-            maxZoom: 18,
-            attribution: '&copy; <a href="https://www.cyclosm.org">CyclOSM</a> &middot; OSM',
-            subdomains: "abc",
-          });
-        case "light":
-          return L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: '&copy; <a href="https://carto.com/">Carto</a> &middot; OSM',
-            subdomains: "abcd",
-          });
-        case "dark":
-          return L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: '&copy; <a href="https://carto.com/">Carto</a> &middot; OSM',
-            subdomains: "abcd",
-          });
-        case "voyager":
-          return L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: '&copy; <a href="https://carto.com/">Carto</a> &middot; OSM',
-            subdomains: "abcd",
-          });
-        case "osm":
-        default:
-          return L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: '&copy; OpenStreetMap',
-          });
-      }
-    })();
-    tile.addTo(map);
-
-    // Force a size recalc once mounted
     setTimeout(() => map.invalidateSize(), 60);
+    return () => { map.remove(); mapRef.current = null; tileRef.current = null; };
+  }, []);
 
-    return () => { map.remove(); mapRef.current = null; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Swap the tile layer when the style changes — keep the route + markers intact.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (tileRef.current) map.removeLayer(tileRef.current);
+    const tile = makeTileLayer(mapStyle);
+    tile.addTo(map);
+    tileRef.current = tile;
   }, [mapStyle]);
 
   // Redraw the route + markers when tour/geometry changes
