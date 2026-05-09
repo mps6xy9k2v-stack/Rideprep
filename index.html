@@ -872,6 +872,194 @@ input[type="range"]::-moz-range-thumb {
 }
 .swatch-btn[aria-pressed="true"] { border-color: var(--fg); }
 
+/* ========== PLAN GENERATOR ========== */
+.plan-placeholder {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 14px;
+  color: var(--fg-dim);
+  font-style: italic;
+  font-family: var(--serif);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--fg-dim);
+}
+.check-row input[type="checkbox"] {
+  width: 18px; height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.num-input.date-input input {
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color-scheme: dark;
+}
+[data-theme="dawn"] .num-input.date-input input { color-scheme: light; }
+
+.seg-wrap {
+  flex-wrap: wrap;
+  border-radius: var(--radius);
+  height: auto;
+}
+.seg-wrap button {
+  flex: 0 0 auto;
+  border-radius: 100px;
+}
+
+.btn-primary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.btn-primary:disabled:hover { background: var(--accent); }
+
+.stale-banner {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--warm) 18%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--warm) 38%, var(--line));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.gen-error {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--danger) 18%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--danger) 38%, var(--line));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ========== PLAN OUTPUT ========== */
+.empty-plan {
+  min-height: 320px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+.empty-plan-inner { max-width: 380px; padding: 32px 20px; }
+.empty-headline {
+  margin: 0 0 12px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+.empty-subtext {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.pathway-badge {
+  margin-left: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 100px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+  align-self: center;
+}
+
+.phase-strip {
+  display: flex;
+  gap: 4px;
+  height: 56px;
+}
+.phase-block {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--phase-color, var(--accent)) 18%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--phase-color, var(--accent)) 38%, var(--line));
+  min-width: 0;
+  overflow: hidden;
+}
+.phase-name {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.phase-range {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vol-bar-btn {
+  padding: 0;
+  cursor: pointer;
+}
+.vol-bar.selected {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+.week-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 100px;
+}
+.week-tab {
+  padding: 7px 14px;
+  font-size: 12px;
+  font-family: var(--mono);
+  border-radius: 100px;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
+  transition: all .18s;
+}
+.week-tab:hover { color: var(--fg); }
+.week-tab[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.week-tab.is-recovery::after {
+  content: "·";
+  margin-left: 4px;
+  color: var(--warm);
+}
+
+.rest-placeholder {
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 17px;
+}
+
 .dim { color: var(--fg-dim); }
 .faint { color: var(--fg-faint); }
 .mono { font-family: var(--mono); }
@@ -911,6 +1099,7 @@ input[type="range"]::-moz-range-thumb {
 
 <script type="text/babel" data-presets="react" src="./src/data.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/shared.jsx"></script>
+<script src="./src/planGenerator.js"></script>
 <script type="text/babel" data-presets="react" src="./src/training.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tour.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tweaks.jsx"></script>
