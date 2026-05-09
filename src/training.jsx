@@ -1,75 +1,250 @@
 /* global window, React */
-// Training view: goal form, plan hero, week grid, workout detail.
+// Training view: plan generator inputs (left) + plan output (right).
 (() => {
-const { useState, useMemo } = React;
+const { useState, useMemo, useEffect } = React;
 
-function GoalForm({ goal, setGoal }) {
+const STORAGE_KEY = "ridePrep:planInputs";
+
+const DEFAULT_INPUTS = {
+  eventSource: null,
+  externalEvent: { type: null, distance: null, elevation: null, date: null },
+  athlete: { height: null, weight: null, gender: null, fitnessMode: null, ftp: null, fitnessLevel: null },
+  planOptions: { timeCrunched: false, weeklyHours: null },
+};
+
+function loadSaved() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? { ...DEFAULT_INPUTS, ...JSON.parse(raw) } : null;
+  } catch { return null; }
+}
+
+// ── Shared primitives ────────────────────────────────────────────────────────
+
+function Seg({ options, value, onChange, wrap }) {
+  return (
+    <div className={"seg" + (wrap ? " seg-wrap" : "")} role="tablist">
+      {options.map((opt) => (
+        <button
+          key={opt}
+          aria-pressed={value === opt}
+          onClick={() => onChange(opt)}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function NumField({ value, onChange, suffix, min, max }) {
+  return (
+    <div className="num-input">
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value === "" ? null : +e.target.value)}
+      />
+      {suffix && <span className="suffix">{suffix}</span>}
+    </div>
+  );
+}
+
+// ── Section cards ────────────────────────────────────────────────────────────
+
+function EventSetupCard({ inputs, setInputs }) {
+  const { eventSource, externalEvent } = inputs;
+  const setSource = (v) => setInputs({ ...inputs, eventSource: v });
+  const setEvent = (patch) =>
+    setInputs({ ...inputs, externalEvent: { ...externalEvent, ...patch } });
+
+  const today = new Date().toISOString().split("T")[0];
+
   return (
     <div className="card">
       <div className="card-title">
-        <h2>Goal</h2>
-        <span className="sub">Plan input</span>
+        <h2>Event Setup</h2>
+        <span className="sub">Step 1</span>
       </div>
-
       <div className="goal-group">
-        <div className="goal-row">
-          <label>Event distance</label>
-          <div className="num-input">
-            <input
-              type="number"
-              value={goal.distance}
-              onChange={(e) => setGoal({ ...goal, distance: +e.target.value || 0 })}
-            />
-            <span className="suffix">{goal.units === "imperial" ? "mi" : "km"}</span>
-          </div>
-        </div>
+        <Seg
+          options={["From Tour Planner", "External Event"]}
+          value={eventSource}
+          onChange={setSource}
+        />
 
-        <div className="goal-row">
-          <label>FTP</label>
-          <div className="num-input">
-            <input
-              type="number"
-              value={goal.ftp}
-              onChange={(e) => setGoal({ ...goal, ftp: +e.target.value || 0 })}
-            />
-            <span className="suffix">watts</span>
-          </div>
-        </div>
+        {eventSource === "From Tour Planner" && (
+          <p className="plan-placeholder">Tour Planner integration coming soon</p>
+        )}
 
-        <div className="goal-row">
-          <label>Time until event</label>
-          <div className="date-chips">
-            {["4 wk", "6 wk", "8 wk", "12 wk", "16 wk"].map((w) => (
-              <button
-                key={w}
-                className="date-chip"
-                aria-pressed={goal.weeks === w}
-                onClick={() => setGoal({ ...goal, weeks: w })}
-              >
-                {w}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="goal-row">
-          <label>Focus</label>
-          <div className="seg" role="tablist">
-            {["Endurance", "Climbing", "Sprint"].map((f) => (
-              <button
-                key={f}
-                aria-pressed={goal.focus === f}
-                onClick={() => setGoal({ ...goal, focus: f })}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-        </div>
+        {eventSource === "External Event" && (
+          <>
+            <div className="goal-row">
+              <label>Event Type</label>
+              <Seg
+                options={["Race", "Sportive", "Long Tour"]}
+                value={externalEvent.type}
+                onChange={(v) => setEvent({ type: v })}
+              />
+            </div>
+            <div className="goal-row">
+              <label>Distance</label>
+              <NumField
+                value={externalEvent.distance}
+                onChange={(v) => setEvent({ distance: v })}
+                suffix="km"
+              />
+            </div>
+            <div className="goal-row">
+              <label>Elevation</label>
+              <NumField
+                value={externalEvent.elevation}
+                onChange={(v) => setEvent({ elevation: v })}
+                suffix="m"
+              />
+            </div>
+            <div className="goal-row">
+              <label>Event Date</label>
+              <div className="num-input date-input">
+                <input
+                  type="date"
+                  min={today}
+                  value={externalEvent.date ?? ""}
+                  onChange={(e) => setEvent({ date: e.target.value || null })}
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
+
+function AthleteProfileCard({ inputs, setInputs }) {
+  const { athlete } = inputs;
+  const setAthlete = (patch) =>
+    setInputs({ ...inputs, athlete: { ...athlete, ...patch } });
+
+  const FITNESS_LEVELS = ["Beginner", "Recreational", "Trained", "Well-Trained", "Competitive"];
+
+  return (
+    <div className="card">
+      <div className="card-title">
+        <h2>Athlete Profile</h2>
+        <span className="sub">Step 2</span>
+      </div>
+      <div className="goal-group">
+        <div className="goal-row">
+          <label>Height</label>
+          <NumField value={athlete.height} onChange={(v) => setAthlete({ height: v })} suffix="cm" />
+        </div>
+        <div className="goal-row">
+          <label>Weight</label>
+          <NumField value={athlete.weight} onChange={(v) => setAthlete({ weight: v })} suffix="kg" />
+        </div>
+        <div className="goal-row">
+          <label>Gender</label>
+          <Seg
+            options={["Male", "Female", "Other"]}
+            value={athlete.gender}
+            onChange={(v) => setAthlete({ gender: v })}
+          />
+        </div>
+        <div className="goal-row">
+          <label>Fitness Input</label>
+          <Seg
+            options={["FTP", "Fitness Level"]}
+            value={athlete.fitnessMode}
+            onChange={(v) => setAthlete({ fitnessMode: v })}
+          />
+        </div>
+        {athlete.fitnessMode === "FTP" && (
+          <div className="goal-row">
+            <label>FTP</label>
+            <NumField value={athlete.ftp} onChange={(v) => setAthlete({ ftp: v })} suffix="watts" />
+          </div>
+        )}
+        {athlete.fitnessMode === "Fitness Level" && (
+          <div className="goal-row">
+            <label>Fitness Level</label>
+            <Seg
+              options={FITNESS_LEVELS}
+              value={athlete.fitnessLevel}
+              onChange={(v) => setAthlete({ fitnessLevel: v })}
+              wrap
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlanOptionsCard({ inputs, setInputs }) {
+  const { planOptions } = inputs;
+  const setOpts = (patch) =>
+    setInputs({ ...inputs, planOptions: { ...planOptions, ...patch } });
+
+  return (
+    <div className="card">
+      <div className="card-title">
+        <h2>Plan Options</h2>
+        <span className="sub">Step 3</span>
+      </div>
+      <div className="goal-group">
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={planOptions.timeCrunched}
+            onChange={(e) =>
+              setOpts({
+                timeCrunched: e.target.checked,
+                weeklyHours: e.target.checked ? planOptions.weeklyHours : null,
+              })
+            }
+          />
+          <span>I have less than 8 hours per week to train</span>
+        </label>
+        {planOptions.timeCrunched && (
+          <div className="goal-row">
+            <label>Weekly hours available</label>
+            <NumField
+              value={planOptions.weeklyHours}
+              onChange={(v) => setOpts({ weeklyHours: v })}
+              suffix="hrs / wk"
+              min={3}
+              max={7}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Validation ───────────────────────────────────────────────────────────────
+
+function isValid(inputs) {
+  const { eventSource, externalEvent, athlete, planOptions } = inputs;
+  if (!eventSource) return false;
+  if (eventSource === "External Event") {
+    if (!externalEvent.type || !externalEvent.distance || !externalEvent.elevation || !externalEvent.date)
+      return false;
+  }
+  if (!athlete.height || !athlete.weight || !athlete.gender || !athlete.fitnessMode) return false;
+  if (athlete.fitnessMode === "FTP" && !athlete.ftp) return false;
+  if (athlete.fitnessMode === "Fitness Level" && !athlete.fitnessLevel) return false;
+  if (planOptions.timeCrunched) {
+    const h = planOptions.weeklyHours;
+    if (!h || h < 3 || h > 7) return false;
+  }
+  return true;
+}
+
+// ── Right-panel components (unchanged) ──────────────────────────────────────
 
 function PlanHero({ goal }) {
   const { PLAN_VOLUME } = window.RP_DATA;
@@ -168,7 +343,6 @@ function WeekGrid({ days, selected, onSelect }) {
 }
 
 function WorkoutDetail({ workout }) {
-  // Build a viz with ~60 blocks proportional to interval durations.
   const viz = useMemo(() => {
     const toSec = (s) => {
       const [m, sec] = s.split(":").map(Number);
@@ -242,10 +416,7 @@ function ZonesCard() {
       <div className="zones">
         {window.RP_DATA.ZONES.map((z) => (
           <div key={z.id} className="zone-row">
-            <span
-              className="zone-swatch"
-              style={{ background: z.color }}
-            />
+            <span className="zone-swatch" style={{ background: z.color }} />
             <span>{z.id} · {z.name}</span>
             <span className="zone-range">{z.range}</span>
           </div>
@@ -255,15 +426,42 @@ function ZonesCard() {
   );
 }
 
+// ── Root view ────────────────────────────────────────────────────────────────
+
 function Training({ goal, setGoal }) {
   const { SAMPLE_WEEK, SAMPLE_WORKOUT } = window.RP_DATA;
   const defaultSelected = SAMPLE_WEEK.findIndex((d) => d.selected);
   const [selected, setSelected] = useState(defaultSelected >= 0 ? defaultSelected : 1);
 
+  const [planInputs, setPlanInputs] = useState(() => loadSaved() || DEFAULT_INPUTS);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(planInputs));
+    } catch {}
+  }, [planInputs]);
+
+  const canGenerate = isValid(planInputs);
+
+  function handleGenerate() {
+    if (!canGenerate) return;
+    console.log("Plan inputs:", planInputs);
+  }
+
   return (
     <div className="training-layout fade-in">
       <div className="stack">
-        <GoalForm goal={goal} setGoal={setGoal} />
+        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} />
+        <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
+        <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
+        <button
+          className="btn btn-primary"
+          style={{ width: "100%" }}
+          disabled={!canGenerate}
+          onClick={handleGenerate}
+        >
+          Generate Plan
+        </button>
         <ZonesCard />
       </div>
 
