@@ -39,7 +39,7 @@ function GoalForm({ goal, setGoal }) {
         <div className="goal-row">
           <label>Time until event</label>
           <div className="date-chips">
-            {["4 wk", "6 wk", "8 wk", "12 wk", "16 wk"].map((w) => (
+            {["4 wk", "6 wk", "8 wk", "12 wk", "16 wk", "20 wk"].map((w) => (
               <button
                 key={w}
                 className="date-chip"
