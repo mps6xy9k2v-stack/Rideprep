@@ -101,14 +101,31 @@ function Tweaks({ tweaks, setTweaks }) {
 
       <div className="tweak-row">
         <label>Map style</label>
-        <div className="seg">
-          {[["cyclosm", "CyclOSM"], ["osm", "OSM"]].map(([k, v]) => (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {[
+            ["light",   "Light",    "Minimal grey"],
+            ["dark",    "Dark",     "Minimal black"],
+            ["voyager", "Voyager",  "Soft colour"],
+            ["cyclosm", "CyclOSM",  "Cycle paths"],
+            ["osm",     "OSM",      "Standard"],
+          ].map(([k, v, hint]) => (
             <button
               key={k}
               aria-pressed={tweaks.mapStyle === k}
               onClick={() => setTweaks({ ...tweaks, mapStyle: k })}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid var(--line)",
+                background: tweaks.mapStyle === k ? "var(--bg-2)" : "transparent",
+                textAlign: "left",
+                fontSize: 12,
+                color: "var(--fg)",
+                lineHeight: 1.3,
+              }}
             >
-              {v}
+              <div style={{ fontWeight: 500 }}>{v}</div>
+              <div className="mono faint" style={{ fontSize: 9, marginTop: 2 }}>{hint}</div>
             </button>
           ))}
         </div>
