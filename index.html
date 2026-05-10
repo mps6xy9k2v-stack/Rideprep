@@ -1459,6 +1459,207 @@ input[type="range"]::-moz-range-thumb {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: none; }
 }
+
+/* ========== DOWNLOAD AS PDF BUTTON ========== */
+.download-pdf-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ========== PRINT VIEW (hidden on screen) ========== */
+.print-view { display: none; }
+
+@media print {
+  /* Hide everything except the portaled .print-view */
+  body > *:not(.print-view) { display: none !important; }
+  .print-view { display: block !important; }
+
+  @page {
+    size: A4;
+    margin: 18mm 15mm;
+  }
+
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  body {
+    font-family: var(--serif), Georgia, serif;
+  }
+
+  .print-view {
+    color: #000;
+    background: #fff;
+    font-size: 10pt;
+    line-height: 1.45;
+  }
+  .print-view * {
+    color: #000;
+    background: transparent;
+    box-shadow: none;
+    text-shadow: none;
+  }
+
+  .print-view h1, .print-view h2, .print-view h3 {
+    font-family: var(--serif), Georgia, serif;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* Cover page */
+  .print-cover {
+    page-break-after: always;
+    break-after: page;
+    text-align: left;
+    padding-top: 30mm;
+  }
+  .print-logo {
+    font-family: var(--serif), Georgia, serif;
+    font-style: italic;
+    font-size: 14pt;
+    margin-bottom: 12mm;
+  }
+  .print-title {
+    font-size: 28pt;
+    margin: 0 0 8mm;
+    font-style: italic;
+    font-weight: 500;
+  }
+  .print-event-line {
+    font-size: 13pt;
+    margin: 0 0 4mm;
+    font-style: normal;
+  }
+  .print-generated {
+    font-size: 9pt;
+    color: #555 !important;
+    margin: 0;
+  }
+
+  /* Generic section */
+  .print-section, .print-schedule, .print-appendix {
+    page-break-inside: auto;
+  }
+  .print-section { margin-bottom: 8mm; }
+  .print-section h2,
+  .print-schedule h2,
+  .print-appendix h2 {
+    font-size: 16pt;
+    margin: 0 0 4mm;
+    border-bottom: 1px solid #999;
+    padding-bottom: 2mm;
+  }
+  .print-section h3,
+  .print-schedule h3,
+  .print-appendix h3 {
+    font-size: 12pt;
+    margin: 4mm 0 2mm;
+  }
+  .print-sub {
+    font-size: 9pt;
+    color: #555 !important;
+    font-style: italic;
+    margin: 0 0 4mm;
+  }
+
+  /* Key-value lists */
+  .print-kv {
+    display: grid;
+    grid-template-columns: 38mm 1fr;
+    gap: 1mm 4mm;
+    margin: 0;
+    font-family: Georgia, serif;
+  }
+  .print-kv dt {
+    font-weight: 600;
+  }
+  .print-kv dd {
+    margin: 0;
+  }
+
+  /* Weekly schedule */
+  .print-schedule {
+    page-break-before: always;
+    break-before: page;
+  }
+  .print-week {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-bottom: 6mm;
+    padding-bottom: 2mm;
+    border-bottom: 1px solid #ddd;
+  }
+  .print-week:last-child { border-bottom: 0; }
+  .print-day-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1mm 0 2mm;
+    font-size: 10pt;
+  }
+  .print-day-table td {
+    padding: 0.6mm 0;
+    vertical-align: top;
+  }
+  .print-day-name {
+    width: 22mm;
+    font-family: Georgia, serif;
+    color: #333 !important;
+  }
+  .print-day-workout {
+    width: 45mm;
+  }
+  .print-day-rest {
+    color: #777 !important;
+    font-style: italic;
+  }
+  .print-day-metrics {
+    text-align: right;
+    color: #444 !important;
+    font-size: 9pt;
+  }
+  .print-intervals {
+    margin: 1mm 0 0 6mm;
+    padding: 0;
+    list-style: none;
+    font-size: 9pt;
+    color: #333 !important;
+  }
+  .print-intervals li {
+    margin: 0.5mm 0;
+    line-height: 1.3;
+  }
+
+  /* Appendix sections start on a new page */
+  .print-appendix {
+    page-break-before: always;
+    break-before: page;
+  }
+  .print-nutr,
+  .print-gloss {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-bottom: 5mm;
+  }
+  .print-nutr ul {
+    margin: 0 0 0 5mm;
+    padding: 0;
+  }
+  .print-nutr li {
+    margin: 1mm 0;
+  }
+  .print-gloss dl {
+    margin: 0;
+  }
+  .print-gloss dt {
+    font-weight: 600;
+    margin-top: 2mm;
+  }
+  .print-gloss dd {
+    margin: 0 0 1mm 0;
+    color: #333 !important;
+  }
+}
 </style>
 </head>
 <body>

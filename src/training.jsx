@@ -1027,6 +1027,187 @@ function NutritionTips({ plan, currentWeekPhase }) {
   );
 }
 
+// ── Print / PDF export ───────────────────────────────────────────────────────
+
+const PRINT_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function formatPrintDate(isoStr) {
+  if (!isoStr) return "";
+  const [y, m, d] = isoStr.split("-").map(Number);
+  if (!y || !m || !d) return isoStr;
+  return `${d} ${PRINT_MONTHS[m - 1]} ${y}`;
+}
+
+function buildPlanFilename(plan) {
+  const distance = Math.round(plan.meta.eventDistance);
+  const eventType = String(plan.meta.eventType || "plan").replace(/\s+/g, "-");
+  const date = plan.meta.eventDate;
+  return `RidePrep-Plan-${distance}km-${eventType}-${date}`;
+}
+
+function intervalSummaryLine(workout) {
+  return workout.intervals
+    .map((iv) => `${iv.label} ${iv.zone} ${iv.durationMin}m`)
+    .join(" · ");
+}
+
+// PrintView renders into document.body via a portal so a single CSS rule —
+// `body > *:not(.print-view) { display: none }` in @media print — can hide
+// the rest of the app cleanly without caring where Training lives.
+function PrintView({ plan, planInputs }) {
+  if (!plan) return null;
+  const { meta, phases, weeks } = plan;
+  const eventLabel = EVENT_LABEL[meta.eventType] || meta.eventType;
+  const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
+  const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
+  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const generatedStr = formatPrintDate(new Date().toISOString().split("T")[0]);
+  const phaseLine = phases
+    .map((p) => p.startWeek === p.endWeek
+      ? `${p.name}: Wk ${p.startWeek}`
+      : `${p.name}: Wk ${p.startWeek}-${p.endWeek}`)
+    .join(" · ");
+
+  const athlete = (planInputs && planInputs.athlete) || {};
+
+  // Dedupe nutrition sections by tips-array identity so aliased phases
+  // (Prep/Base/Adapt all share one tip set) don't print three identical
+  // blocks. Order: phases in plan, then Race Day, then General.
+  const nutritionSections = [];
+  const seenTips = new Set();
+  for (const phaseName of [...phases.map((p) => p.name), "Race Day", "General"]) {
+    const tips = NUTRITION_TIPS_DATA[phaseName];
+    if (!tips || seenTips.has(tips)) continue;
+    seenTips.add(tips);
+    nutritionSections.push({ phaseName, tips });
+  }
+
+  const tree = (
+    <div className="print-view">
+      <section className="print-cover">
+        <div className="print-logo">Ride Prep</div>
+        <h1 className="print-title">Ride Prep Training Plan</h1>
+        <p className="print-event-line">
+          {eventLabel} · {meta.eventDistance} km · {meta.eventElevation} m · {formatPrintDate(meta.eventDate)}
+        </p>
+        <p className="print-generated">Generated {generatedStr}</p>
+      </section>
+
+      <section className="print-section">
+        <h2>Athlete Profile</h2>
+        <dl className="print-kv">
+          {athlete.height != null && (<><dt>Height</dt><dd>{athlete.height} cm</dd></>)}
+          {athlete.weight != null && (<><dt>Weight</dt><dd>{athlete.weight} kg</dd></>)}
+          {athlete.gender && (<><dt>Gender</dt><dd>{athlete.gender}</dd></>)}
+          {athlete.fitnessMode === "FTP" && athlete.ftp && (
+            <><dt>FTP (entered)</dt><dd>{athlete.ftp} W</dd></>
+          )}
+          {athlete.fitnessMode === "Fitness Level" && athlete.fitnessLevel && (
+            <><dt>Fitness Level</dt><dd>{athlete.fitnessLevel}</dd></>
+          )}
+          <dt>Estimated FTP</dt><dd>{meta.estimatedFTP} W</dd>
+          <dt>Weekly hours target</dt><dd>{meta.weeklyHoursTarget} hrs</dd>
+          <dt>Pathway</dt><dd>{meta.pathway === "timeCrunched" ? "Time-crunched" : "Default"}</dd>
+        </dl>
+      </section>
+
+      <section className="print-section">
+        <h2>Plan Overview</h2>
+        <dl className="print-kv">
+          <dt>Total weeks</dt><dd>{meta.weeksUntilEvent}</dd>
+          <dt>Total volume</dt><dd>{Math.round(totalHours)} hrs</dd>
+          <dt>Peak week</dt>
+          <dd>Wk {peak.number} · {peak.totalHours} hrs · TSS {peak.totalTSS}</dd>
+          {tierLabel && (<><dt>Climbing</dt><dd>{tierLabel} · {meta.climbingDensity} m/km</dd></>)}
+          <dt>Phases</dt><dd>{phaseLine}</dd>
+        </dl>
+      </section>
+
+      <section className="print-schedule">
+        <h2>Weekly Schedule</h2>
+        {weeks.map((w) => (
+          <div key={w.number} className="print-week">
+            <h3>
+              Week {w.number} · {w.phase}
+              {w.isRecoveryWeek && " · Recovery"}
+              {" · "}{w.totalHours} hrs · TSS {w.totalTSS}
+            </h3>
+            <table className="print-day-table">
+              <tbody>
+                {w.days.map((d, i) => {
+                  const date = dateForWeekDay(w.number, i);
+                  const dateLabel = fmtDate(date);
+                  if (!d.workout) {
+                    return (
+                      <tr key={i}>
+                        <td className="print-day-name">{d.day} {dateLabel}</td>
+                        <td className="print-day-rest" colSpan={2}>Rest</td>
+                      </tr>
+                    );
+                  }
+                  const wo = d.workout;
+                  return (
+                    <tr key={i}>
+                      <td className="print-day-name">{d.day} {dateLabel}</td>
+                      <td className="print-day-workout"><strong>{wo.name}</strong></td>
+                      <td className="print-day-metrics">
+                        {wo.durationMin} min · {wo.distanceKm} km · TSS {wo.tss}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {w.days.some((d) => d.workout) && (
+              <ul className="print-intervals">
+                {w.days.filter((d) => d.workout).map((d, i) => (
+                  <li key={i}>
+                    <strong>{d.workout.name}:</strong>{" "}
+                    {intervalSummaryLine(d.workout)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </section>
+
+      <section className="print-appendix">
+        <h2>Nutrition Tips</h2>
+        <p className="print-sub">Guidance, not a meal plan. Adjust to your body and preferences.</p>
+        {nutritionSections.map(({ phaseName, tips }) => (
+          <div key={phaseName} className="print-nutr">
+            <h3>{phaseName}</h3>
+            <ul>{tips.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          </div>
+        ))}
+      </section>
+
+      <section className="print-appendix">
+        <h2>Glossary</h2>
+        {GLOSSARY.map((section) => (
+          <div key={section.title} className="print-gloss">
+            <h3>{section.title}</h3>
+            <dl>
+              {section.terms.map(([name, def]) => (
+                <React.Fragment key={name}>
+                  <dt>{name}</dt>
+                  <dd>{def}</dd>
+                </React.Fragment>
+              ))}
+            </dl>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+
+  return ReactDOM.createPortal(tree, document.body);
+}
+
 // ── Root view ────────────────────────────────────────────────────────────────
 
 function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
@@ -1141,6 +1322,18 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     }
   }
 
+  function handleDownloadPdf() {
+    if (!generatedPlan) return;
+    const original = document.title;
+    document.title = buildPlanFilename(generatedPlan);
+    const restore = () => {
+      document.title = original;
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    window.print();
+  }
+
   const currentWeek = generatedPlan ? generatedPlan.weeks[selectedWeek - 1] : null;
 
   return (
@@ -1215,6 +1408,13 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               plan={generatedPlan}
               currentWeekPhase={currentWeek && currentWeek.phase}
             />
+            <button
+              className="btn btn-ghost download-pdf-btn"
+              onClick={handleDownloadPdf}
+            >
+              <span aria-hidden="true">⬇</span> Download as PDF
+            </button>
+            <PrintView plan={generatedPlan} planInputs={planInputs} />
           </>
         )}
       </div>
