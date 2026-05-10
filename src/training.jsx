@@ -1,7 +1,7 @@
 /* global window, React */
 // Training view: plan generator inputs (left) + dynamic plan output (right).
 (() => {
-const { useState, useMemo, useEffect } = React;
+const { useState, useMemo, useEffect, useRef } = React;
 
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
@@ -443,6 +443,7 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
   const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
+  const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
 
   return (
     <div className="plan-hero">
@@ -463,6 +464,12 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
           <span className="label">Peak week</span>
           <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
+        {tierLabel && (
+          <div>
+            <span className="label">Climbing</span>
+            <span className="val">{tierLabel} · {meta.climbingDensity} m/km</span>
+          </div>
+        )}
       </div>
 
       <div className="phase-strip">
@@ -581,6 +588,9 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
                 <span className="day-date">{dateLabel}</span>
               </div>
               <div className="day-type">{w.name}</div>
+              {w.type === "climbing" && (
+                <div className="climbing-tag">↑ Climbing</div>
+              )}
               <div className="day-metric">{w.distanceKm} km · TSS {w.tss}</div>
               <div className="zone-strip">
                 {segs.map((zone) => (
@@ -650,6 +660,13 @@ function WorkoutDetail({ week, dayIndex }) {
         </div>
         <button className="btn btn-primary">Start</button>
       </div>
+
+      {workout.type === "climbing" && (
+        <div className="climbing-note">
+          This workout targets climbing-specific demands. Find a real climb if possible,
+          or simulate by riding at low cadence in a higher gear.
+        </div>
+      )}
 
       <div className="interval-viz">
         {viz.map((b, i) => (
@@ -725,6 +742,8 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   const [savedTours] = useState(loadSavedTours);
   const [generatedPlan, setGeneratedPlan] = useState(initialPlan);
   const [generationError, setGenerationError] = useState(null);
+  // null | "created" | "updated" — drives the transient post-generate banner.
+  const [confirmationState, setConfirmationState] = useState(null);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(() =>
     initialPlan ? firstNonRestDay(initialPlan.weeks[0]) : null
@@ -734,6 +753,23 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   useEffect(() => {
     try { window.localStorage.setItem(INPUTS_KEY, JSON.stringify(planInputs)); } catch {}
   }, [planInputs]);
+
+  // Auto-dismiss the confirmation banner. A ref-managed timer ensures that
+  // clicking Generate again before timeout resets the countdown even when
+  // the new state value equals the previous one (React skips same-value
+  // updates, so a useEffect on confirmationState alone wouldn't re-fire).
+  const confirmTimerRef = useRef(null);
+  function showConfirmation(kind) {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmationState(kind);
+    confirmTimerRef.current = setTimeout(() => {
+      setConfirmationState(null);
+      confirmTimerRef.current = null;
+    }, 3500);
+  }
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+  }, []);
 
   // Persist plan.
   useEffect(() => {
@@ -787,9 +823,11 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
       // what the user controls in the UI, not the synthesized form.
       plan.inputsSnapshot = JSON.parse(JSON.stringify(planInputs));
       if (tourSnapshot) plan.tourDataSnapshot = tourSnapshot;
+      const isFirstPlan = !generatedPlan;
       setGeneratedPlan(plan);
       setSelectedWeek(1);
       setSelectedDay(firstNonRestDay(plan.weeks[0]));
+      showConfirmation(isFirstPlan ? "created" : "updated");
     } catch (e) {
       setGenerationError(e && e.message ? e.message : "Plan generation failed");
     }
@@ -811,7 +849,18 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
 
-        {isStale && (
+        {confirmationState && (
+          <div className="confirm-banner">
+            <span className="confirm-check" aria-hidden="true">✓</span>
+            <span>
+              {confirmationState === "created"
+                ? "Plan created"
+                : "Plan updated to match your inputs"}
+            </span>
+          </div>
+        )}
+
+        {isStale && !confirmationState && (
           <div className="stale-banner">
             Inputs changed. Click Generate Plan to update.
           </div>
