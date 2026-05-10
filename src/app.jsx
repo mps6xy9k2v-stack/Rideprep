@@ -45,7 +45,12 @@ function App() {
     units: tweaks.units,
   });
 
-  const { Brand, Pill } = window.RP_SHARED;
+  const { Brand, Pill, Tooltip } = window.RP_SHARED;
+  const fitnessTip = !fitnessLabel
+    ? null
+    : fitnessLabel.startsWith("FTP ")
+      ? "Functional Threshold Power. The power you can sustain for about an hour. Used to set workout intensities."
+      : "Your self-rated fitness level. Used to estimate workout intensities since you didn't enter an FTP.";
   const Training = window.RP_Training;
   const Tour = window.RP_Tour;
   const Tweaks = window.RP_Tweaks;
@@ -76,7 +81,11 @@ function App() {
         </div>
         <div className="header-meta">
           <Pill>2026 · W19</Pill>
-          {fitnessLabel && <Pill>{fitnessLabel}</Pill>}
+          {fitnessLabel && (
+            <Tooltip content={fitnessTip} side="bottom">
+              <Pill>{fitnessLabel}</Pill>
+            </Tooltip>
+          )}
         </div>
       </header>
 

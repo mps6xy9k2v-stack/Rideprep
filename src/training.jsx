@@ -2,6 +2,105 @@
 // Training view: plan generator inputs (left) + dynamic plan output (right).
 (() => {
 const { useState, useMemo, useEffect, useRef } = React;
+const Tooltip = window.RP_SHARED.Tooltip;
+
+// ── Plain-language tooltip + glossary copy ──────────────────────────────────
+
+const TIP = {
+  totalVolume: "Total training time across all weeks of the plan.",
+  peakWeek:    "Your highest-volume week, usually 2-3 weeks before the event. After this, training tapers off so you arrive fresh.",
+  climbing:    "How hilly your event is, in metres of elevation gain per kilometre. Higher means hillier.",
+  tss:         "Training Stress Score. A measure of how demanding this workout is overall.",
+  if:          "Intensity Factor. How hard the average effort is, as a fraction of your threshold. 1.0 means right at threshold.",
+};
+
+const PHASE_TIPS = {
+  Prep:  "Easing back into structured training. Lower volume, mostly easy riding.",
+  Base:  "Building aerobic endurance with steady, mostly easy rides and some moderate efforts.",
+  Build: "Adding event-specific intensity. Threshold and tempo work alongside endurance volume.",
+  Peak:  "Highest training load. Race-specific intensity to sharpen you for the event.",
+  Taper: "Reducing volume while keeping intensity to arrive at the event fresh.",
+  Adapt: "Time-crunched plan's foundation phase. Builds capacity quickly with focused sessions.",
+};
+
+const ZONE_TIPS = {
+  Z1: "Very easy, used between hard efforts and on rest days.",
+  Z2: "Easy steady riding. The foundation of cycling fitness.",
+  Z3: "Moderate. Useful for sustained efforts and climbing rhythm.",
+  Z4: "Hard sustained effort. Builds the power you can hold for an hour.",
+  Z5: "Very hard. Builds maximum aerobic capacity.",
+  Z6: "All-out, short efforts. Builds sprint power.",
+};
+
+const WORKOUT_PLAIN = {
+  endurance:  "A steady, comfortable ride at a pace where you can hold a conversation. Builds your aerobic engine.",
+  long:       "Your long weekly ride. Mostly easy, conversational pace. Builds endurance and trains your body to use fat as fuel.",
+  tempo:      "Sustained moderate effort. Harder than easy, easier than threshold. Trains your muscles to clear fatigue.",
+  sweetSpot:  "Just below your threshold. A productive intensity for building fitness without too much fatigue.",
+  threshold:  "Hard sustained efforts at your one-hour limit. The classic session for raising your sustainable power.",
+  vo2max:     "Short, hard intervals near your maximum. Builds your aerobic ceiling so everything below feels easier.",
+  recovery:   "Very easy spinning to promote blood flow and recovery without adding fatigue.",
+  openers:    "Short, sharp efforts to wake up the legs without taxing them.",
+};
+
+function workoutPlainDesc(workout) {
+  let s = WORKOUT_PLAIN[workout.type] || "";
+  if (s && workout.hasClimbingFocus) {
+    s += " Find a hilly route or simulate by riding in a higher gear at low cadence.";
+  }
+  return s;
+}
+
+const GLOSSARY = [
+  {
+    title: "Power and Effort",
+    terms: [
+      ["FTP (Functional Threshold Power)", "The power you can sustain for about an hour. Most workout intensities are calculated as a percentage of this."],
+      ["TSS (Training Stress Score)",      "A score that combines workout duration and intensity into one number. Higher means more demanding."],
+      ["IF (Intensity Factor)",            "How hard the average effort is, as a fraction of FTP. 1.0 means right at threshold."],
+      ["W/kg",                              "Power-to-weight ratio. Cycling performance often comes down to this number, especially when climbing."],
+    ],
+  },
+  {
+    title: "Training Zones",
+    terms: [
+      ["Z1 Recovery",   "Very easy, below 55% FTP. Used between hard efforts."],
+      ["Z2 Endurance",  "Easy steady, 55-75% FTP. The foundation of fitness."],
+      ["Z3 Tempo",      "Moderate, 76-90% FTP. Useful for sustained efforts."],
+      ["Z4 Threshold",  "Hard, 91-105% FTP. Builds your one-hour power."],
+      ["Z5 VO2max",     "Very hard, 106-120% FTP. Builds aerobic ceiling."],
+      ["Z6 Anaerobic",  "All-out, above 120% FTP. Short, intense efforts."],
+    ],
+  },
+  {
+    title: "Workout Types",
+    terms: [
+      ["Endurance",   "Steady, easy-pace rides that build your aerobic engine."],
+      ["Long Ride",   "Your weekly long ride, mostly easy, builds endurance."],
+      ["Sweet Spot",  "Just below threshold, productive without too much fatigue."],
+      ["Threshold",   "Hard sustained efforts at your one-hour pace."],
+      ["VO2max",      "Short, hard intervals near your maximum capacity."],
+      ["Tempo",       "Moderate steady efforts between easy and hard."],
+    ],
+  },
+  {
+    title: "Plan Structure",
+    terms: [
+      ["Base",          "Aerobic foundation phase. Mostly easy with some moderate."],
+      ["Build",         "Intensity-focused phase. Adds threshold and harder work."],
+      ["Peak",          "Highest-load phase before the event. Race-specific work."],
+      ["Taper",         "Final phase. Volume drops, intensity stays, you arrive fresh."],
+      ["Recovery Week", "Every fourth week, volume drops 30% to allow adaptation."],
+    ],
+  },
+  {
+    title: "Other",
+    terms: [
+      ["RPE (Rate of Perceived Exertion)", "How hard the effort feels on a scale of 1 to 10. Useful when you don't have a power meter."],
+      ["Cadence",                          "How fast you spin the pedals, in revolutions per minute. Most efficient riders sit between 80 and 100 rpm."],
+    ],
+  },
+];
 
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
@@ -437,16 +536,25 @@ function EmptyPlanState() {
 
 // ── Right-panel: plan summary, phases, volume bars ──────────────────────────
 
-function PlanHero({ plan, selectedWeek, onSelectWeek }) {
+function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
   const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
+  const tssNote = "TSS measures the stress of a week's training. Higher means harder.";
 
   return (
     <div className="plan-hero">
+      <Tooltip content="Glossary of cycling training terms" side="bottom">
+        <button
+          className="glossary-trigger"
+          onClick={onOpenGlossary}
+          aria-label="Open glossary"
+        >?</button>
+      </Tooltip>
+
       <div className="plan-meta">
         <div>
           <span className="label">Plan</span>
@@ -457,16 +565,16 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
           <span className="val">{focus}</span>
         </div>
         <div>
-          <span className="label">Total volume</span>
+          <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
           <span className="val">{Math.round(totalHours)} hrs</span>
         </div>
         <div>
-          <span className="label">Peak week</span>
+          <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
           <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
         {tierLabel && (
           <div>
-            <span className="label">Climbing</span>
+            <Tooltip content={TIP.climbing} side="bottom"><span className="label tip-trigger">Climbing</span></Tooltip>
             <span className="val">{tierLabel} · {meta.climbingDensity} m/km</span>
           </div>
         )}
@@ -486,7 +594,9 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
                 width: `${w}%`,
                 "--phase-color": PHASE_COLOR_VAR[p.name] || "var(--accent)",
               }}
-              title={`${p.name} · ${p.tid}`}
+              title={PHASE_TIPS[p.name]
+                ? `${p.name}: ${PHASE_TIPS[p.name]}`
+                : `${p.name} · ${p.tid}`}
             >
               <span className="phase-name">{p.name}</span>
               <span className="phase-range">{range}</span>
@@ -509,8 +619,8 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
               onClick={() => onSelectWeek(w.number)}
               aria-pressed={w.number === selectedWeek}
               title={w.isRecoveryWeek
-                ? `Wk ${w.number} · Recovery week. Volume drops 30% to allow adaptation.`
-                : `Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs`}
+                ? `Wk ${w.number} · Recovery week. Volume drops 30% to allow adaptation. ${tssNote}`
+                : `Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs. ${tssNote}`}
             >
               {w.isRecoveryWeek && (
                 <span className="vol-bar-rest-icon" aria-hidden="true">↺</span>
@@ -651,6 +761,8 @@ function WorkoutDetail({ week, dayIndex, fitnessMode }) {
   const hours = workout.durationMin / 60;
   const ifv = hours > 0 ? Math.sqrt(workout.tss / (hours * 100)) : 0;
 
+  const plain = workoutPlainDesc(workout);
+
   return (
     <div className="card workout-detail">
       <div className="workout-header">
@@ -658,13 +770,20 @@ function WorkoutDetail({ week, dayIndex, fitnessMode }) {
           <h3>{workout.name}</h3>
           <div className="workout-meta">
             <span>{fmtDuration(workout.durationMin)}</span>
-            <span>TSS {workout.tss}</span>
-            <span>IF {ifv.toFixed(2)}</span>
+            <Tooltip content={TIP.tss}><span className="tip-trigger">TSS {workout.tss}</span></Tooltip>
+            <Tooltip content={TIP.if}><span className="tip-trigger">IF {ifv.toFixed(2)}</span></Tooltip>
             <span>{workout.type}</span>
           </div>
         </div>
         <button className="btn btn-primary">Start</button>
       </div>
+
+      {plain && (
+        <div className="workout-plain">
+          <b>What this means</b>
+          {plain}
+        </div>
+      )}
 
       {workout.hasClimbingFocus && (
         <div className="climbing-note">
@@ -814,12 +933,59 @@ function ZonesCard({ fitnessMode }) {
         {window.RP_DATA.ZONES.map((z) => (
           <div key={z.id} className="zone-row">
             <span className="zone-swatch" style={{ background: z.color }} />
-            <span>{z.id} · {z.name}</span>
+            <Tooltip content={ZONE_TIPS[z.id]}>
+              <span className="tip-trigger">{z.id} · {z.name}</span>
+            </Tooltip>
             <span className="zone-range">
               {isFeel ? ZONES_FEEL[z.id].split(" · ")[1] : z.range}
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Glossary modal ──────────────────────────────────────────────────────────
+
+function GlossaryModal({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    // Lock background scroll while open.
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h2>Glossary</h2>
+            <p className="modal-sub">Key terms used in your training plan</p>
+          </div>
+          <button className="modal-close" onClick={onClose} aria-label="Close glossary">×</button>
+        </div>
+        <div className="modal-body">
+          {GLOSSARY.map((section) => (
+            <section key={section.title} className="gloss-section">
+              <h3>{section.title}</h3>
+              <dl>
+                {section.terms.map(([name, def]) => (
+                  <div key={name} className="gloss-row">
+                    <dt>{name}</dt>
+                    <dd>{def}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -878,6 +1044,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   const [generationError, setGenerationError] = useState(null);
   // null | "created" | "updated" — drives the transient post-generate banner.
   const [confirmationState, setConfirmationState] = useState(null);
+  const [showGlossary, setShowGlossary] = useState(false);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(() =>
     initialPlan ? firstNonRestDay(initialPlan.weeks[0]) : null
@@ -1016,6 +1183,8 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
         <ZonesCard fitnessMode={planInputs.athlete.fitnessMode} />
       </div>
 
+      {showGlossary && <GlossaryModal onClose={() => setShowGlossary(false)} />}
+
       <div className="stack" style={{ gap: 20 }}>
         {!generatedPlan ? (
           <EmptyPlanState />
@@ -1025,6 +1194,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               plan={generatedPlan}
               selectedWeek={selectedWeek}
               onSelectWeek={handleSelectWeek}
+              onOpenGlossary={() => setShowGlossary(true)}
             />
             <WeekTabs
               weeks={generatedPlan.weeks}
