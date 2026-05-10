@@ -508,8 +508,13 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
               style={{ height: `${(w.totalTSS / maxTSS) * 100}%` }}
               onClick={() => onSelectWeek(w.number)}
               aria-pressed={w.number === selectedWeek}
-              title={`Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs`}
+              title={w.isRecoveryWeek
+                ? `Wk ${w.number} · Recovery week. Volume drops 30% to allow adaptation.`
+                : `Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs`}
             >
+              {w.isRecoveryWeek && (
+                <span className="vol-bar-rest-icon" aria-hidden="true">↺</span>
+              )}
               <span className="vol-bar-label">Wk {w.number}</span>
               {w.isRecoveryWeek && <span className="vol-bar-recovery">Recovery</span>}
             </button>
@@ -588,8 +593,8 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
                 <span className="day-date">{dateLabel}</span>
               </div>
               <div className="day-type">{w.name}</div>
-              {w.type === "climbing" && (
-                <div className="climbing-tag">↑ Climbing</div>
+              {w.hasClimbingFocus && (
+                <div className="climbing-tag">↑ {w.targetElevation} m target</div>
               )}
               <div className="day-metric">{w.distanceKm} km · TSS {w.tss}</div>
               <div className="zone-strip">
@@ -661,10 +666,10 @@ function WorkoutDetail({ week, dayIndex }) {
         <button className="btn btn-primary">Start</button>
       </div>
 
-      {workout.type === "climbing" && (
+      {workout.hasClimbingFocus && (
         <div className="climbing-note">
-          This workout targets climbing-specific demands. Find a real climb if possible,
-          or simulate by riding at low cadence in a higher gear.
+          This ride has an elevation target. Seek hilly terrain or a sustained climb —
+          or simulate by riding in a higher gear at steady effort.
         </div>
       )}
 

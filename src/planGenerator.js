@@ -240,19 +240,24 @@ function distanceForIntervals(intervals) {
 
 // ── Concrete workouts ───────────────────────────────────────────────────────
 
-function endurance(min) {
+function endurance(min, targetElevation = null) {
   const main = Math.max(20, min - 20);
-  return makeWorkout({
+  const desc = targetElevation
+    ? `Endurance, target ~${targetElevation} m elevation`
+    : "Steady Z2, smooth cadence 85-95";
+  const w = makeWorkout({
     name: "Endurance",
     type: "endurance",
     primaryZone: "Z2",
-    description: "Steady Z2, smooth cadence 85-95",
+    description: desc,
     intervals: [
       { zone: "Z1", durationMin: 10, label: "Warm-up" },
       { zone: "Z2", durationMin: main, label: "Main set" },
       { zone: "Z1", durationMin: 10, label: "Cool-down" },
     ],
   });
+  if (targetElevation) { w.hasClimbingFocus = true; w.targetElevation = targetElevation; }
+  return w;
 }
 
 function recoverySpin(min = 40) {
@@ -317,56 +322,6 @@ function threshold(min = 65) {
   });
 }
 
-// ── Climbing workouts ───────────────────────────────────────────────────────
-
-function hillRepeats() {
-  const intervals = [{ zone: "Z1", durationMin: 15, label: "Warm-up" }];
-  for (let i = 0; i < 5; i++) {
-    intervals.push({ zone: "Z5", durationMin: 3, label: "Hill " + (i + 1) });
-    if (i < 4) intervals.push({ zone: "Z2", durationMin: 3, label: "Recovery" });
-  }
-  intervals.push({ zone: "Z1", durationMin: 10, label: "Cool-down" });
-  return makeWorkout({
-    name: "Hill Repeats",
-    type: "climbing",
-    primaryZone: "Z5",
-    description: "Short, hard hill efforts to build power for steep climbs",
-    intervals,
-  });
-}
-
-function sustainedClimb() {
-  return makeWorkout({
-    name: "Sustained Climb",
-    type: "climbing",
-    primaryZone: "Z4",
-    description: "Long, steady climbing efforts at threshold",
-    intervals: [
-      { zone: "Z1", durationMin: 15, label: "Warm-up" },
-      { zone: "Z4", durationMin: 15, label: "Climb 1 (90-95% FTP)" },
-      { zone: "Z2", durationMin: 5,  label: "Recovery" },
-      { zone: "Z4", durationMin: 15, label: "Climb 2 (90-95% FTP)" },
-      { zone: "Z1", durationMin: 10, label: "Cool-down" },
-    ],
-  });
-}
-
-function bigGearClimbing() {
-  const intervals = [{ zone: "Z1", durationMin: 10, label: "Warm-up" }];
-  for (let i = 0; i < 4; i++) {
-    intervals.push({ zone: "Z3", durationMin: 6, label: "Big gear " + (i + 1) + " (50-60 rpm)" });
-    if (i < 3) intervals.push({ zone: "Z1", durationMin: 4, label: "Recovery" });
-  }
-  intervals.push({ zone: "Z1", durationMin: 10, label: "Cool-down" });
-  return makeWorkout({
-    name: "Big Gear Climbing",
-    type: "climbing",
-    primaryZone: "Z3",
-    description: "Strength-focused climbing at low cadence to build leg power",
-    intervals,
-  });
-}
-
 function vo2max(min = 60, micro = false) {
   // 5x3 min @ 110-115% FTP, equal recovery. Micro variant: 3x2 min for taper.
   const sets   = micro ? 3 : 5;
@@ -387,7 +342,7 @@ function vo2max(min = 60, micro = false) {
   });
 }
 
-function longRide(min, phaseName, eventType, climbingTier, climbingDensity) {
+function longRide(min, phaseName, eventType) {
   // Mostly Z2; Build/Peak insert a Z3 block (or race-pace surges in Peak).
   const wuCd = 10;
   const main = Math.max(30, min - 2 * wuCd);
@@ -406,17 +361,9 @@ function longRide(min, phaseName, eventType, climbingTier, climbingDensity) {
   }
   intervals.push({ zone: "Z1", durationMin: wuCd, label: "Cool-down" });
 
-  let desc = (phaseName === "Build" || phaseName === "Peak") && main > 60
+  const desc = (phaseName === "Build" || phaseName === "Peak") && main > 60
     ? "Long ride: mostly Z2 with Z3 inserts"
     : eventType === "Long Tour" ? "Long ride: maximize Z2 volume" : "Long ride: steady Z2";
-
-  if (climbingTier === "hilly" || climbingTier === "mountainous") {
-    // Estimate climb target from ride duration × event climbing density,
-    // assuming ~24 km/h average. Round to nearest 50 m.
-    const estKm = (min / 60) * 24;
-    const targetElev = Math.round((estKm * climbingDensity) / 50) * 50;
-    desc += `. Seek out hilly terrain — aim for ~${targetElev} m elevation gain`;
-  }
 
   return makeWorkout({
     name: "Long Ride",
@@ -450,8 +397,9 @@ function shortOpener() {
 // Per-week composer
 // ============================================================================
 
-// Climbing tier helpers. Tiers gate which (and how many) climbing-specific
-// workouts appear in Build/Peak weeks. Base/Prep/Taper stay terrain-agnostic.
+// Climbing tier from event m/km. Used for elevation suggestions on endurance
+// and long rides, and for the UI metric display. No dedicated climbing
+// workouts exist; instead, regular rides carry an elevation target.
 function climbingTierFromDensity(d) {
   if (d < 10) return "flat";
   if (d < 15) return "rolling";
@@ -459,38 +407,16 @@ function climbingTierFromDensity(d) {
   return "mountainous";
 }
 
-function climbingWorkoutCount(tier, pathway) {
-  const base = { flat: 0, rolling: 1, hilly: 2, mountainous: 3 }[tier] || 0;
-  if (pathway !== "timeCrunched") return base;
-  // TC pathway: one less than default, with a floor of 1 for hilly+.
-  if (tier === "hilly" || tier === "mountainous") return Math.max(1, base - 1);
-  return Math.max(0, base - 1);
-}
-
-// Climbing builders, ordered by importance. Sustained Climb is the
-// foundational climbing workout and is added first.
-function climbBuildersForCount(n) {
-  const out = [];
-  if (n >= 1) out.push(() => sustainedClimb());
-  if (n >= 2) out.push(() => hillRepeats());
-  if (n >= 3) out.push(() => bigGearClimbing());
-  return out;
-}
-
 // Returns an array of intensity workout BUILDERS appropriate for the phase.
 // The builders are zero-arg; the composer just calls them in order, cycling
 // the array if it needs more intensity slots than the array has entries.
-function intensityBuildersForPhase(phase, climbingTier, pathway, eventType) {
+function intensityBuildersForPhase(phase, pathway, eventType) {
   const p = phase.name;
-  const climbN = (p === "Build" || p === "Peak")
-    ? climbingWorkoutCount(climbingTier, pathway)
-    : 0;
-  const climbs = climbBuildersForCount(climbN);
 
   if (pathway === "timeCrunched") {
     if (p === "Adapt") return [() => sweetSpot(60), () => sweetSpot(60)];
-    if (p === "Build") return [...climbs, () => threshold(60), () => sweetSpot(60)];
-    if (p === "Peak")  return [...climbs, () => vo2max(60),    () => threshold(60)];
+    if (p === "Build") return [() => threshold(60), () => sweetSpot(60)];
+    if (p === "Peak")  return [() => vo2max(60),    () => threshold(60)];
     if (p === "Taper") return [() => vo2max(45, true), () => shortOpener()];
     return [() => sweetSpot(60)];
   }
@@ -500,12 +426,12 @@ function intensityBuildersForPhase(phase, climbingTier, pathway, eventType) {
     return [() => sweetSpot(70), () => tempoZ3(60)];
   }
   if (p === "Build") {
-    const a = [...climbs, () => threshold(70), () => sweetSpot(80)];
+    const a = [() => threshold(70), () => sweetSpot(80)];
     if (eventType === "Race") a.push(() => vo2max(60));
     return a;
   }
   if (p === "Peak") {
-    return [...climbs, () => vo2max(60), () => threshold(65)];
+    return [() => vo2max(60), () => threshold(65)];
   }
   if (p === "Taper") {
     return [() => vo2max(45, true), () => shortOpener()];
@@ -554,11 +480,28 @@ function composeWeek(ctx) {
   if (isRecovery) longMin = Math.round((longMin * 0.7) / 5) * 5;
   longMin = Math.max(60, longMin);
 
-  days[5].workout = longRide(longMin, phase.name, eventType, climbingTier, climbingDensity);
+  // Build the long ride then annotate with an elevation target for non-flat
+  // terrain. Cap effective density at 18 m/km so mountainous events don't
+  // produce unrealistic targets on a single ride.
+  let longRideWorkout = longRide(longMin, phase.name, eventType);
+  if (climbingTier !== "flat") {
+    const targetElev = Math.round(
+      (longRideWorkout.distanceKm * Math.min(climbingDensity, 18)) / 50
+    ) * 50;
+    if (targetElev > 0) {
+      longRideWorkout = {
+        ...longRideWorkout,
+        description: `Long Ride, target ~${targetElev} m elevation`,
+        hasClimbingFocus: true,
+        targetElevation: targetElev,
+      };
+    }
+  }
+  days[5].workout = longRideWorkout;
   let remainingMin = totalMin - longMin;
 
   // Intensity slots — Tue, then Thu, then Wed for high-volume Build/Peak weeks.
-  const builders = intensityBuildersForPhase(phase, climbingTier, pathway, eventType);
+  const builders = intensityBuildersForPhase(phase, pathway, eventType);
   const slots = [];
   if (activeDays >= 4) slots.push(1);                       // Tue
   if (activeDays >= 5 && !isRecovery) slots.push(3);        // Thu
@@ -570,10 +513,29 @@ function composeWeek(ctx) {
   for (let i = 0; i < slots.length; i++) {
     const idx = slots[i];
     let w = builders[i % builders.length]();
-    // During recovery weeks, swap intensity for endurance.
+    // During recovery weeks, swap intensity for endurance (no elevation hint).
     if (isRecovery) w = endurance(60);
     days[idx].workout = w;
     remainingMin -= w.durationMin;
+  }
+
+  // Determine elevation hint budget for filler endurance rides.
+  // rolling: suggest on 1 ride at ~50% density (cap 12 m/km)
+  // hilly:   suggest on 2 rides at full density (cap 18 m/km)
+  // mountainous: suggest on all rides at full density (cap 18 m/km)
+  let enduranceHintBudget = 0;
+  let enduranceHintDensity = 0;
+  if (!isRecovery) {
+    if (climbingTier === "rolling") {
+      enduranceHintBudget = 1;
+      enduranceHintDensity = Math.min(climbingDensity * 0.5, 12);
+    } else if (climbingTier === "hilly") {
+      enduranceHintBudget = 2;
+      enduranceHintDensity = Math.min(climbingDensity, 18);
+    } else if (climbingTier === "mountainous") {
+      enduranceHintBudget = Infinity;
+      enduranceHintDensity = Math.min(climbingDensity, 18);
+    }
   }
 
   // Endurance / recovery fillers on remaining active days.
@@ -584,12 +546,19 @@ function composeWeek(ctx) {
 
   if (fillIdx.length > 0 && remainingMin > 0) {
     const each = Math.max(40, Math.floor((remainingMin / fillIdx.length) / 5) * 5);
+    let hintsUsed = 0;
     for (const idx of fillIdx) {
       const dayName = days[idx].day;
       if (dayName === "Fri") {
         days[idx].workout = recoverySpin(Math.min(45, each));
       } else {
-        days[idx].workout = endurance(each);
+        let targetElev = null;
+        if (hintsUsed < enduranceHintBudget) {
+          const estKm = (each / 60) * ZONE_KMH.Z2;
+          const raw = Math.round((estKm * enduranceHintDensity) / 50) * 50;
+          if (raw > 0) { targetElev = raw; hintsUsed++; }
+        }
+        days[idx].workout = endurance(each, targetElev);
       }
     }
   }
@@ -628,7 +597,9 @@ function weeksUntilDate(eventDateStr) {
 function estimateFTP(athlete) {
   if (athlete.fitnessMode === "FTP") return Math.round(athlete.ftp);
   const coef = FTP_COEFFICIENTS[athlete.fitnessLevel];
-  return Math.round(athlete.weight * coef);
+  // Small physiological modifier applied only to level-based estimates.
+  const genderModifier = { Male: 1.00, Female: 0.92, Other: 0.96 }[athlete.gender] || 1.00;
+  return Math.round(athlete.weight * coef * genderModifier);
 }
 
 function eventTypeKey(t) {
@@ -659,8 +630,8 @@ function generatePlan(planInputs) {
     ? weeklyHoursTarget
     : peakWeeklyHoursFromTarget(weeklyHoursTarget, event.type);
 
-  // Climbing tier from event m/km. Drives how many climbing-specific
-  // workouts appear in Build/Peak (see intensityBuildersForPhase).
+  // Climbing tier from event m/km. Drives elevation hints on long and
+  // endurance rides; no dedicated climbing workouts are injected.
   const climbingDensityRaw = event.elevation / event.distance;
   const climbingDensity = Math.round(climbingDensityRaw);
   const climbingTier = climbingTierFromDensity(climbingDensityRaw);
