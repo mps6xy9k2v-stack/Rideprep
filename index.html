@@ -1190,6 +1190,61 @@ input[type="range"]::-moz-range-thumb {
   text-align: center;
 }
 
+/* ========== NUTRITION TIPS ========== */
+.nutr-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.nutr-tab {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--mono);
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+  letter-spacing: 0.03em;
+  transition: all .18s;
+  white-space: nowrap;
+}
+.nutr-tab:hover { color: var(--fg); border-color: var(--line-strong); }
+.nutr-tab.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+.nutr-tips {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+.nutr-tips li {
+  position: relative;
+  padding-left: 18px;
+  font-size: 14px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+.nutr-tips li::before {
+  content: "–";
+  position: absolute;
+  left: 0;
+  color: var(--fg-faint);
+}
+.nutr-note {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--warm) 10%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--warm) 24%, var(--line));
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  font-style: italic;
+}
+
 .dim { color: var(--fg-dim); }
 .faint { color: var(--fg-faint); }
 .mono { font-family: var(--mono); }

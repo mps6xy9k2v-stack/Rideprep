@@ -619,7 +619,7 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
 
 // ── Right-panel: workout detail for the selected day ────────────────────────
 
-function WorkoutDetail({ week, dayIndex }) {
+function WorkoutDetail({ week, dayIndex, fitnessMode }) {
   const day = week && dayIndex != null ? week.days[dayIndex] : null;
   const workout = day && day.workout ? day.workout : null;
 
@@ -691,17 +691,23 @@ function WorkoutDetail({ week, dayIndex }) {
             </span>
             <div>
               <div className="interval-label">{iv.label}</div>
-              <div className="interval-detail">{ZONES_LABEL[iv.zone] || ""}</div>
+              <div className="interval-detail">{zoneDetail(iv.zone, fitnessMode)}</div>
             </div>
             <span className="interval-duration">{fmtDuration(iv.durationMin)}</span>
           </div>
         ))}
       </div>
+
+      {workoutNutritionNote(workout) && (
+        <div className="nutr-note">
+          {workoutNutritionNote(workout)}
+        </div>
+      )}
     </div>
   );
 }
 
-const ZONES_LABEL = {
+const ZONES_LABEL_FTP = {
   Z1: "Active Recovery · <55% FTP",
   Z2: "Endurance · 55-75% FTP",
   Z3: "Tempo · 76-90% FTP",
@@ -710,24 +716,147 @@ const ZONES_LABEL = {
   Z6: "Anaerobic · >120% FTP",
 };
 
-// ── Zones reference card (unchanged) ────────────────────────────────────────
+const ZONES_FEEL = {
+  Z1: "Active Recovery · Very easy, fully relaxed",
+  Z2: "Endurance · Easy, can hold a conversation",
+  Z3: "Tempo · Moderate, breathing harder but still speakable",
+  Z4: "Threshold · Hard, only short sentences",
+  Z5: "VO2max · Very hard, breathing heavily",
+  Z6: "Anaerobic · All-out effort, unsustainable",
+};
 
-function ZonesCard() {
+function zoneDetail(zoneId, fitnessMode) {
+  return fitnessMode === "Fitness Level"
+    ? (ZONES_FEEL[zoneId] || "")
+    : (ZONES_LABEL_FTP[zoneId] || "");
+}
+
+// ── Nutrition tips data ──────────────────────────────────────────────────────
+
+const _prepBaseTips = [
+  "Carbohydrates are your main fuel on training days. Aim for 5-7 g per kg body weight.",
+  "Protein supports adaptation. Aim for 1.4-1.7 g per kg body weight per day, spread across meals.",
+  "Healthy fats matter for hormones. Avocado, nuts, oily fish.",
+  "For rides over 90 minutes, practice eating on the bike.",
+  "Match calorie intake to training load on bigger weeks.",
+];
+
+const NUTRITION_TIPS_DATA = {
+  Prep:      _prepBaseTips,
+  Base:      _prepBaseTips,
+  Adapt:     _prepBaseTips,
+  Build: [
+    "Keep carb intake high. Whole grains, fruit, vegetables, potatoes.",
+    "Time carb-rich meals around your harder sessions.",
+    "Hold protein at 1.4-1.7 g per kg, 20-30 g per meal.",
+    "Start practicing race-day fueling: 60-90 g carbs per hour on long rides.",
+    "Don't try new foods on intensity days.",
+  ],
+  Peak: [
+    "Maintain energy stores. This is not the time to restrict calories.",
+    "Practice your planned race-day breakfast on weekend long rides.",
+    "Hydrate consistently. Add electrolytes on longer or hot rides.",
+    "Avoid new supplements or major dietary changes.",
+  ],
+  Taper: [
+    "Slightly reduce calories as training volume drops, but keep carbs high.",
+    "Stay well hydrated in the days before the event.",
+    "Get plenty of sleep. It now matters more than any food choice.",
+    "Stick to familiar foods. No experiments.",
+  ],
+  "Race Day": [
+    "Eat your usual breakfast 3 hours before the start.",
+    "Top up with 30-60 g carbs in the hour before.",
+    "During the event, aim for 60-90 g carbs per hour and 500-750 ml fluid.",
+    "Use familiar gels, bars, or drinks. Nothing new on race day.",
+    "Within 30 minutes after: roughly 20 g protein and 60 g carbs.",
+  ],
+  General: [
+    "Hydrate consistently. Light yellow urine is a good daily marker.",
+    "Don't undereat. Training raises your calorie needs.",
+    "Recovery happens when you rest. Sleep is part of fueling.",
+    "Whole foods first. Supplements only fill specific gaps.",
+  ],
+};
+
+function workoutNutritionNote(workout) {
+  if (!workout) return null;
+  const { type, hasClimbingFocus } = workout;
+  if (hasClimbingFocus) {
+    return "Higher elevation means higher effort. Aim for the upper end of fueling ranges, around 80-90 g carbs per hour.";
+  }
+  if (type === "long") {
+    return "Fuel before, during, and after. Aim for 60-90 g carbs per hour and 500-750 ml fluid per hour. Refuel within 30 minutes of finishing.";
+  }
+  if (type === "threshold" || type === "sweetSpot" || type === "vo2max" || type === "tempo") {
+    return "A carb-rich snack 30-60 minutes before helps. No fueling needed during workouts under 90 minutes.";
+  }
+  if (type === "endurance") {
+    return "Eat normally before. For rides over 90 minutes, take 30-60 g carbs per hour.";
+  }
+  if (type === "recovery") {
+    return "Easy session. No special fueling needed. Listen to hunger.";
+  }
+  return null;
+}
+
+// ── Zones reference card ────────────────────────────────────────────────────
+
+function ZonesCard({ fitnessMode }) {
+  const isFeel = fitnessMode === "Fitness Level";
   return (
     <div className="card">
       <div className="card-title">
         <h2>Zones</h2>
-        <span className="sub">Power-based</span>
+        <span className="sub">{isFeel ? "Feel-based" : "Power-based"}</span>
       </div>
       <div className="zones">
         {window.RP_DATA.ZONES.map((z) => (
           <div key={z.id} className="zone-row">
             <span className="zone-swatch" style={{ background: z.color }} />
             <span>{z.id} · {z.name}</span>
-            <span className="zone-range">{z.range}</span>
+            <span className="zone-range">
+              {isFeel ? ZONES_FEEL[z.id].split(" · ")[1] : z.range}
+            </span>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Nutrition tips card ──────────────────────────────────────────────────────
+
+function NutritionTips({ plan, currentWeekPhase }) {
+  const phaseTabs = plan.phases.map((p) => p.name);
+  const allTabs = [...phaseTabs, "Race Day", "General"];
+  const defaultTab = phaseTabs.includes(currentWeekPhase) ? currentWeekPhase : phaseTabs[0];
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
+  const tips = NUTRITION_TIPS_DATA[activeTab] || NUTRITION_TIPS_DATA["General"];
+
+  return (
+    <div className="card">
+      <div className="card-title">
+        <h2>Nutrition tips</h2>
+        <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
+      </div>
+      <div className="nutr-tabs">
+        {allTabs.map((tab) => (
+          <button
+            key={tab}
+            className={"nutr-tab" + (tab === activeTab ? " active" : "")}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      <ul className="nutr-tips">
+        {tips.map((tip, i) => (
+          <li key={i}>{tip}</li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -884,7 +1013,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
           <div className="gen-error">{generationError}</div>
         )}
 
-        <ZonesCard />
+        <ZonesCard fitnessMode={planInputs.athlete.fitnessMode} />
       </div>
 
       <div className="stack" style={{ gap: 20 }}>
@@ -907,7 +1036,15 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               selectedDay={selectedDay}
               onSelectDay={setSelectedDay}
             />
-            <WorkoutDetail week={currentWeek} dayIndex={selectedDay} />
+            <WorkoutDetail
+              week={currentWeek}
+              dayIndex={selectedDay}
+              fitnessMode={planInputs.athlete.fitnessMode}
+            />
+            <NutritionTips
+              plan={generatedPlan}
+              currentWeekPhase={currentWeek && currentWeek.phase}
+            />
           </>
         )}
       </div>
