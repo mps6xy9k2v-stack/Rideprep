@@ -307,16 +307,19 @@ function PlanOptionsCard({ inputs, setInputs }) {
           <span>I have less than 8 hours per week to train</span>
         </label>
         {planOptions.timeCrunched && (
-          <div className="goal-row">
-            <label>Weekly hours available</label>
-            <NumField
-              value={planOptions.weeklyHours}
-              onChange={(v) => setOpts({ weeklyHours: v })}
-              suffix="hrs / wk"
-              min={3}
-              max={7}
-            />
-          </div>
+          <>
+            <p className="tc-note">Time-crunched plan active — workouts optimised for ≤8 hrs/wk.</p>
+            <div className="goal-row">
+              <label>Weekly hours available</label>
+              <NumField
+                value={planOptions.weeklyHours}
+                onChange={(v) => setOpts({ weeklyHours: v })}
+                suffix="hrs / wk"
+                min={3}
+                max={7}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -439,7 +442,6 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
   const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
-  const pathwayLabel = meta.pathway === "timeCrunched" ? "Time-crunched" : "Default";
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
 
   return (
@@ -461,7 +463,6 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
           <span className="label">Peak week</span>
           <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
-        <div className="pathway-badge">{pathwayLabel}</div>
       </div>
 
       <div className="phase-strip">
@@ -503,6 +504,7 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
               title={`Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs`}
             >
               <span className="vol-bar-label">Wk {w.number}</span>
+              {w.isRecoveryWeek && <span className="vol-bar-recovery">Recovery</span>}
             </button>
           ))}
         </div>

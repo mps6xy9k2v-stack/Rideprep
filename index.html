@@ -317,8 +317,10 @@ a { color: inherit; }
   min-height: 4px;
 }
 .vol-bar.rest {
-  background: repeating-linear-gradient(45deg, var(--bg-2) 0 4px, transparent 4px 8px);
-  border: 1px solid var(--line);
+  background: linear-gradient(180deg,
+    color-mix(in oklch, var(--accent) 38%, var(--bg-2)),
+    color-mix(in oklch, var(--accent) 20%, transparent));
+  opacity: 0.52;
 }
 .vol-bar-label {
   position: absolute;
@@ -332,7 +334,20 @@ a { color: inherit; }
   letter-spacing: 0.06em;
   white-space: nowrap;
 }
-.volume-graph-wrap { padding-bottom: 22px; }
+.vol-bar-recovery {
+  position: absolute;
+  bottom: -32px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--accent);
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.volume-graph-wrap { padding-bottom: 34px; }
 
 .week-grid {
   display: grid;
@@ -965,17 +980,14 @@ input[type="range"]::-moz-range-thumb {
   line-height: 1.55;
 }
 
-.pathway-badge {
-  margin-left: auto;
-  padding: 6px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 100px;
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.tc-note {
+  margin: 4px 0 0;
+  padding-left: 28px;
+  font-size: 12px;
   color: var(--fg-dim);
-  align-self: center;
+  font-family: var(--serif);
+  font-style: italic;
+  line-height: 1.4;
 }
 
 .phase-strip {

@@ -3,8 +3,19 @@
 (() => {
 const { useState, useEffect } = React;
 
+function readFitnessLabel() {
+  try {
+    const p = JSON.parse(window.localStorage.getItem("ridePrep:planInputs") || "null");
+    const a = p && p.athlete;
+    if (a && a.fitnessMode === "FTP" && a.ftp) return `FTP ${a.ftp}W`;
+    if (a && a.fitnessMode === "Fitness Level" && a.fitnessLevel) return a.fitnessLevel;
+    return null;
+  } catch { return null; }
+}
+
 function App() {
   const [tab, setTab] = useState("tour"); // start on tour to show the map
+  const [fitnessLabel, setFitnessLabel] = useState(readFitnessLabel);
 
   // Allow descendants (e.g. Training) to switch tabs via a custom event,
   // without threading setTab through the prop tree.
@@ -15,6 +26,9 @@ function App() {
     window.addEventListener("rideprep:switch-tab", handler);
     return () => window.removeEventListener("rideprep:switch-tab", handler);
   }, []);
+
+  // Re-read fitness label whenever the user returns from Training tab.
+  useEffect(() => { setFitnessLabel(readFitnessLabel()); }, [tab]);
   const [tweaks, setTweaks] = useState(window.__TWEAKS__ || {
     theme: "midnight",
     units: "metric",
@@ -62,7 +76,7 @@ function App() {
         </div>
         <div className="header-meta">
           <Pill>2026 · W19</Pill>
-          <Pill>FTP {goal.ftp}w</Pill>
+          {fitnessLabel && <Pill>{fitnessLabel}</Pill>}
         </div>
       </header>
 
