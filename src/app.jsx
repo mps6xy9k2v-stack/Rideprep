@@ -1,10 +1,20 @@
 /* global window, React, ReactDOM */
 // Root component: header tabs + active view + floating tweaks panel.
 (() => {
-const { useState } = React;
+const { useState, useEffect } = React;
 
 function App() {
   const [tab, setTab] = useState("tour"); // start on tour to show the map
+
+  // Allow descendants (e.g. Training) to switch tabs via a custom event,
+  // without threading setTab through the prop tree.
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail === "training" || e.detail === "tour") setTab(e.detail);
+    };
+    window.addEventListener("rideprep:switch-tab", handler);
+    return () => window.removeEventListener("rideprep:switch-tab", handler);
+  }, []);
   const [tweaks, setTweaks] = useState(window.__TWEAKS__ || {
     theme: "midnight",
     units: "metric",

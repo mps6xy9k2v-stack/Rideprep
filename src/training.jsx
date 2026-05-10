@@ -5,13 +5,34 @@ const { useState, useMemo, useEffect } = React;
 
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
+const TOURS_KEY  = "ridePrep:tours";
 
 const DEFAULT_INPUTS = {
   eventSource: null,
   externalEvent: { type: null, distance: null, elevation: null, date: null },
+  // tourEvent is used when eventSource === "From Tour Planner". The selected
+  // tour is referenced by id; the date is required because saved tours don't
+  // carry a fixed event date.
+  tourEvent: { tourId: null, date: null },
   athlete: { height: null, weight: null, gender: null, fitnessMode: null, ftp: null, fitnessLevel: null },
   planOptions: { timeCrunched: false, weeklyHours: null },
 };
+
+// ── Tour Planner state location (per Step 0 audit) ──────────────────────────
+//
+// Tours are local React state in src/tour.jsx (a single object, not an array;
+// no name; no event date; no per-stage dates). They are not persisted by
+// default. The Tour Planner's "Save" button now writes a lightweight record
+// to localStorage under TOURS_KEY:
+//
+//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
+//
+// Training reads this list to populate the tour selector. The id is stable
+// per from+to pair so re-saving the same route updates the existing entry.
+function loadSavedTours() {
+  const arr = loadJSON(TOURS_KEY);
+  return Array.isArray(arr) ? arr : [];
+}
 
 function loadJSON(key) {
   try {
@@ -55,13 +76,24 @@ function NumField({ value, onChange, suffix, min, max }) {
 
 // ── Input cards ─────────────────────────────────────────────────────────────
 
-function EventSetupCard({ inputs, setInputs }) {
-  const { eventSource, externalEvent } = inputs;
+function EventSetupCard({ inputs, setInputs, savedTours }) {
+  const { eventSource, externalEvent, tourEvent } = inputs;
   const setSource = (v) => setInputs({ ...inputs, eventSource: v });
   const setEvent = (patch) =>
     setInputs({ ...inputs, externalEvent: { ...externalEvent, ...patch } });
+  const setTour = (patch) =>
+    setInputs({ ...inputs, tourEvent: { ...tourEvent, ...patch } });
 
   const today = new Date().toISOString().split("T")[0];
+
+  const selectedTour = tourEvent && tourEvent.tourId
+    ? savedTours.find((t) => t.id === tourEvent.tourId)
+    : null;
+  const tourDataIncomplete = selectedTour && (!selectedTour.totalKm || !selectedTour.totalAscent);
+
+  function goToTourPlanner() {
+    window.dispatchEvent(new CustomEvent("rideprep:switch-tab", { detail: "tour" }));
+  }
 
   return (
     <div className="card">
@@ -76,8 +108,73 @@ function EventSetupCard({ inputs, setInputs }) {
           onChange={setSource}
         />
 
-        {eventSource === "From Tour Planner" && (
-          <p className="plan-placeholder">Tour Planner integration coming soon</p>
+        {eventSource === "From Tour Planner" && savedTours.length === 0 && (
+          <div className="goal-row">
+            <p className="plan-placeholder">
+              No tours planned yet. Create a tour in the Tour Planner to use it here.
+            </p>
+            <button className="btn btn-ghost" onClick={goToTourPlanner}>
+              Open Tour Planner →
+            </button>
+          </div>
+        )}
+
+        {eventSource === "From Tour Planner" && savedTours.length > 0 && (
+          <>
+            <div className="goal-row">
+              <label>Tour</label>
+              <select
+                className="plan-select"
+                value={tourEvent.tourId || ""}
+                onChange={(e) => setTour({ tourId: e.target.value || null })}
+              >
+                <option value="">Select a tour…</option>
+                {savedTours.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {selectedTour && (
+              <div className="tour-summary-card">
+                <div className="tour-summary-name">{selectedTour.name}</div>
+                <div className="tour-summary-stats">
+                  <span>{selectedTour.totalKm} km</span>
+                  <span>↑ {selectedTour.totalAscent} m</span>
+                  {selectedTour.stageCount > 1 && (
+                    <span>{selectedTour.stageCount} stages</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tourDataIncomplete && (
+              <div className="gen-error">
+                Selected tour has incomplete data, please update it in the Tour Planner.
+              </div>
+            )}
+
+            {selectedTour && !tourDataIncomplete && (
+              <div className="goal-row">
+                <label>Event Date</label>
+                <div className="num-input date-input">
+                  <input
+                    type="date"
+                    min={today}
+                    value={tourEvent.date ?? ""}
+                    onChange={(e) => setTour({ date: e.target.value || null })}
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {eventSource === "From Tour Planner" && savedTours.length > 0 && tourEvent.tourId && !selectedTour && (
+          // Selected tour was deleted from storage — surface and offer recovery.
+          <div className="gen-error">
+            The previously selected tour is no longer available. Pick another tour above.
+          </div>
         )}
 
         {eventSource === "External Event" && (
@@ -228,12 +325,18 @@ function PlanOptionsCard({ inputs, setInputs }) {
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
-function isValid(inputs) {
-  const { eventSource, externalEvent, athlete, planOptions } = inputs;
+function isValid(inputs, savedTours = []) {
+  const { eventSource, externalEvent, tourEvent, athlete, planOptions } = inputs;
   if (!eventSource) return false;
   if (eventSource === "External Event") {
     if (!externalEvent.type || !externalEvent.distance || !externalEvent.elevation || !externalEvent.date)
       return false;
+  }
+  if (eventSource === "From Tour Planner") {
+    if (!tourEvent || !tourEvent.tourId || !tourEvent.date) return false;
+    const tour = savedTours.find((t) => t.id === tourEvent.tourId);
+    if (!tour) return false;                         // tour was deleted
+    if (!tour.totalKm || !tour.totalAscent) return false; // incomplete tour data
   }
   if (!athlete.height || !athlete.weight || !athlete.gender || !athlete.fitnessMode) return false;
   if (athlete.fitnessMode === "FTP" && !athlete.ftp) return false;
@@ -243,6 +346,22 @@ function isValid(inputs) {
     if (!h || h < 3 || h > 7) return false;
   }
   return true;
+}
+
+// Detect tour drift: same tourId selected, but its km/ascent changed since
+// the plan was generated. Inputs-snapshot comparison alone misses this
+// because tourId is unchanged.
+function isTourStale(plan, planInputs, savedTours) {
+  if (!plan || !plan.tourDataSnapshot) return false;
+  if (planInputs.eventSource !== "From Tour Planner") return false;
+  const tourId = planInputs.tourEvent && planInputs.tourEvent.tourId;
+  if (!tourId) return false;
+  const tour = savedTours.find((t) => t.id === tourId);
+  if (!tour) return false;
+  return (
+    tour.totalKm !== plan.tourDataSnapshot.totalKm ||
+    tour.totalAscent !== plan.tourDataSnapshot.totalAscent
+  );
 }
 
 // ── Plan helpers ────────────────────────────────────────────────────────────
@@ -598,6 +717,10 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     const saved = loadJSON(INPUTS_KEY);
     return saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
   });
+  // Loaded once on mount. Training is conditionally rendered in app.jsx, so
+  // it remounts on every tab switch — that re-reads localStorage and picks up
+  // tours saved while the user was on the Tour Planner tab.
+  const [savedTours] = useState(loadSavedTours);
   const [generatedPlan, setGeneratedPlan] = useState(initialPlan);
   const [generationError, setGenerationError] = useState(null);
   const [selectedWeek, setSelectedWeek] = useState(1);
@@ -621,18 +744,47 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     } catch {}
   }, [generatedPlan]);
 
-  const canGenerate = isValid(planInputs);
+  const canGenerate = isValid(planInputs, savedTours);
   const isStale =
-    generatedPlan &&
-    JSON.stringify(planInputs) !== JSON.stringify(generatedPlan.inputsSnapshot);
+    generatedPlan && (
+      JSON.stringify(planInputs) !== JSON.stringify(generatedPlan.inputsSnapshot)
+      || isTourStale(generatedPlan, planInputs, savedTours)
+    );
 
   function handleGenerate() {
     setGenerationError(null);
     if (!canGenerate) return;
+
+    // Build the inputs the generator actually consumes. Tour-sourced events
+    // are translated into a synthetic "External Event" with type=Long Tour
+    // and tour totals, so the generator stays unaware of tours.
+    let generatorInputs = planInputs;
+    let tourSnapshot = null;
+    if (planInputs.eventSource === "From Tour Planner") {
+      const tour = savedTours.find((t) => t.id === planInputs.tourEvent.tourId);
+      if (!tour) {
+        setGenerationError("Selected tour is no longer available. Pick another tour.");
+        return;
+      }
+      tourSnapshot = { totalKm: tour.totalKm, totalAscent: tour.totalAscent };
+      generatorInputs = {
+        ...planInputs,
+        eventSource: "External Event",
+        externalEvent: {
+          type: "Long Tour",
+          distance: tour.totalKm,
+          elevation: tour.totalAscent,
+          date: planInputs.tourEvent.date,
+        },
+      };
+    }
+
     try {
-      const plan = window.RP_PlanGenerator.generatePlan(planInputs);
-      // Snapshot the inputs so we can detect drift later.
+      const plan = window.RP_PlanGenerator.generatePlan(generatorInputs);
+      // Snapshot the *original* user inputs so the stale-banner reflects
+      // what the user controls in the UI, not the synthesized form.
       plan.inputsSnapshot = JSON.parse(JSON.stringify(planInputs));
+      if (tourSnapshot) plan.tourDataSnapshot = tourSnapshot;
       setGeneratedPlan(plan);
       setSelectedWeek(1);
       setSelectedDay(firstNonRestDay(plan.weeks[0]));
@@ -653,7 +805,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   return (
     <div className="training-layout fade-in">
       <div className="stack">
-        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} />
+        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} savedTours={savedTours} />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
 

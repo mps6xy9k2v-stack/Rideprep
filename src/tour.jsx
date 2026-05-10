@@ -341,7 +341,7 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, loading, error }) {
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, onSave, saveFeedback, loading, error }) {
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -451,8 +451,12 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         <button className="btn btn-primary" onClick={onPlan} disabled={loading} style={{ flex: 1, opacity: loading ? 0.7 : 1 }}>
           {loading ? "Planning…" : "Plan route"}
         </button>
-        <button className="btn btn-ghost">Save</button>
+        <button className="btn btn-ghost" onClick={onSave}>Save</button>
       </div>
+
+      {saveFeedback && (
+        <div className="save-feedback">{saveFeedback}</div>
+      )}
 
       {error && (
         <div style={{
@@ -556,6 +560,40 @@ function SummaryBar({ tour, units }) {
   );
 }
 
+// ---------- localStorage persistence ----------
+//
+// Tour Planner state is local to this component and not shared. The "Save"
+// button writes a lightweight record (no geometry) to ridePrep:tours so the
+// Training page can read available tours without depending on component state.
+//
+// Saved record shape:
+//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
+//
+// Tours are identified by from+to — saving the same route overwrites the
+// previous entry with the same stable id, keeping Training's tourId reference
+// valid across re-saves.
+function saveTourToStorage(tour) {
+  try {
+    const raw = window.localStorage.getItem("ridePrep:tours");
+    const list = raw ? JSON.parse(raw) : [];
+    const existingIdx = list.findIndex((t) => t.from === tour.from && t.to === tour.to);
+    const entry = {
+      id: existingIdx >= 0 ? list[existingIdx].id : `tour_${Date.now()}`,
+      name: `${tour.from} → ${tour.to}`,
+      from: tour.from,
+      to: tour.to,
+      totalKm: tour.totalKm || 0,
+      totalAscent: tour.totalAscent || 0,
+      stageCount: (tour.stages || []).length,
+      savedAt: Date.now(),
+    };
+    if (existingIdx >= 0) list[existingIdx] = entry;
+    else list.push(entry);
+    window.localStorage.setItem("ridePrep:tours", JSON.stringify(list));
+    return entry.id;
+  } catch { return null; }
+}
+
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
   const [stops, setStops] = useState(["Munich, DE", "Innsbruck, AT"]);
@@ -608,6 +646,13 @@ function Tour({ tweaks }) {
 
   const [tour, setTour] = useState(initialDemo);
   const [geometry, setGeometry] = useState(initialDemo()._geom);
+  const [saveFeedback, setSaveFeedback] = useState(null);
+
+  const handleSave = useCallback(() => {
+    const id = saveTourToStorage(tour);
+    setSaveFeedback(id ? "Tour saved!" : "Save failed");
+    setTimeout(() => setSaveFeedback(null), 2500);
+  }, [tour]);
 
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
@@ -674,6 +719,8 @@ function Tour({ tweaks }) {
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             budget={budget} setBudget={setBudget}
             onPlan={planRoute}
+            onSave={handleSave}
+            saveFeedback={saveFeedback}
             loading={loading}
             error={error}
           />
