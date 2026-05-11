@@ -32,6 +32,30 @@ function Pill({ children }) {
   return <span className="pill">{children}</span>;
 }
 
+// Hover/tap tooltip. `content` may be a string or React node. If `content`
+// is falsy the children render unwrapped — handy for conditional tips.
+function Tooltip({ children, content, side = "top" }) {
+  const [open, setOpen] = useState(false);
+  if (!content) return children;
+  return (
+    <span
+      className="tip-wrap"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+    >
+      {children}
+      {open && (
+        <span className={"tip tip-" + side} role="tooltip">
+          {content}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Brand() {
   return (
     <div className="brand">
@@ -41,5 +65,5 @@ function Brand() {
   );
 }
 
-window.RP_SHARED = { clsx, fmtKm, fmtElev, BikeIcon, Pill, Brand };
+window.RP_SHARED = { clsx, fmtKm, fmtElev, BikeIcon, Pill, Tooltip, Brand };
 })();

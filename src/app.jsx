@@ -1,10 +1,42 @@
 /* global window, React, ReactDOM */
 // Root component: header tabs + active view + floating tweaks panel.
 (() => {
-const { useState } = React;
+const { useState, useEffect } = React;
+
+function readFitnessLabel() {
+  try {
+    const p = JSON.parse(window.localStorage.getItem("ridePrep:planInputs") || "null");
+    const a = p && p.athlete;
+    if (a && a.fitnessMode === "FTP" && a.ftp) return `FTP ${a.ftp}W`;
+    if (a && a.fitnessMode === "Fitness Level" && a.fitnessLevel) return a.fitnessLevel;
+    return null;
+  } catch { return null; }
+}
 
 function App() {
   const [tab, setTab] = useState("tour"); // start on tour to show the map
+  const [fitnessLabel, setFitnessLabel] = useState(readFitnessLabel);
+
+  // Allow descendants (e.g. Training) to switch tabs via a custom event,
+  // without threading setTab through the prop tree.
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail === "training" || e.detail === "tour") setTab(e.detail);
+    };
+    window.addEventListener("rideprep:switch-tab", handler);
+    return () => window.removeEventListener("rideprep:switch-tab", handler);
+  }, []);
+
+  // Re-read fitness label whenever the user returns from Training tab.
+  useEffect(() => { setFitnessLabel(readFitnessLabel()); }, [tab]);
+
+  // Live updates: Training dispatches "rideprep:inputs-changed" on every
+  // planInputs edit, so the pill stays in sync without a tab switch.
+  useEffect(() => {
+    const handler = () => setFitnessLabel(readFitnessLabel());
+    window.addEventListener("rideprep:inputs-changed", handler);
+    return () => window.removeEventListener("rideprep:inputs-changed", handler);
+  }, []);
   const [tweaks, setTweaks] = useState(window.__TWEAKS__ || {
     theme: "midnight",
     units: "metric",
@@ -21,7 +53,12 @@ function App() {
     units: tweaks.units,
   });
 
-  const { Brand, Pill } = window.RP_SHARED;
+  const { Brand, Pill, Tooltip } = window.RP_SHARED;
+  const fitnessTip = !fitnessLabel
+    ? null
+    : fitnessLabel.startsWith("FTP ")
+      ? "Functional Threshold Power. The power you can sustain for about an hour. Used to set workout intensities."
+      : "Your self-rated fitness level. Used to estimate workout intensities since you didn't enter an FTP.";
   const Training = window.RP_Training;
   const Tour = window.RP_Tour;
   const Tweaks = window.RP_Tweaks;
@@ -52,7 +89,11 @@ function App() {
         </div>
         <div className="header-meta">
           <Pill>2026 · W19</Pill>
-          <Pill>FTP {goal.ftp}w</Pill>
+          {fitnessLabel && (
+            <Tooltip content={fitnessTip} side="bottom">
+              <Pill>{fitnessLabel}</Pill>
+            </Tooltip>
+          )}
         </div>
       </header>
 
