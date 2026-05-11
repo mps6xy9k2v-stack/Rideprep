@@ -29,6 +29,14 @@ function App() {
 
   // Re-read fitness label whenever the user returns from Training tab.
   useEffect(() => { setFitnessLabel(readFitnessLabel()); }, [tab]);
+
+  // Live updates: Training dispatches "rideprep:inputs-changed" on every
+  // planInputs edit, so the pill stays in sync without a tab switch.
+  useEffect(() => {
+    const handler = () => setFitnessLabel(readFitnessLabel());
+    window.addEventListener("rideprep:inputs-changed", handler);
+    return () => window.removeEventListener("rideprep:inputs-changed", handler);
+  }, []);
   const [tweaks, setTweaks] = useState(window.__TWEAKS__ || {
     theme: "midnight",
     units: "metric",

@@ -279,7 +279,9 @@ a { color: inherit; }
 .plan-meta {
   display: flex; flex-wrap: wrap; gap: 22px;
   align-items: baseline;
+  padding-right: 44px;
 }
+.plan-meta .tip-wrap { display: block; }
 .plan-meta .big {
   font-family: var(--serif);
   font-size: 44px;
@@ -503,9 +505,9 @@ a { color: inherit; }
 .zones { display: grid; gap: 8px; }
 .zone-row {
   display: grid;
-  grid-template-columns: 20px 1fr auto;
-  align-items: center;
-  gap: 10px;
+  grid-template-columns: 20px 80px 1fr;
+  align-items: start;
+  gap: 5px 10px;
   font-size: 13px;
 }
 .zone-swatch { width: 14px; height: 14px; border-radius: 4px; }

@@ -1,7 +1,23 @@
 /* global window, React, L */
 // Tour planner: form + Leaflet map with OpenRouteService routing.
 (() => {
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ---------- Full-state persistence ----------
+//
+// Auto-persist the full Tour Planner state (stops, route, settings, geometry)
+// to localStorage on every change, so switching tabs or reloading the page
+// returns the user to their last route. The lightweight "ridePrep:tours"
+// record is kept in sync as a side effect so Training sees current data
+// without requiring an explicit Save click.
+const TOUR_STATE_KEY = "ridePrep:tourState";
+
+function loadFullTourState() {
+  try {
+    const raw = window.localStorage.getItem(TOUR_STATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
 
 // ---------- ORS API helpers ----------
 const ORS_BASE = "https://api.openrouteservice.org";
@@ -596,9 +612,18 @@ function saveTourToStorage(tour) {
 
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
-  const [stops, setStops] = useState(["Munich, DE", "Innsbruck, AT"]);
-  const [dailyKm, setDailyKm] = useState(60);
-  const [budget, setBudget] = useState("mid");
+  // Load any previously-persisted state once on mount. Subsequent renders
+  // reuse the same object via useMemo so the lazy useState initialisers
+  // below all see the same snapshot.
+  const saved = useMemo(() => loadFullTourState(), []);
+  const { DEMO_TOUR: _DT } = window.RP_DATA;
+  const defaultStops = [_DT.from, _DT.to];
+
+  const [stops, setStops] = useState(() =>
+    (saved && Array.isArray(saved.stops) && saved.stops.length >= 2) ? saved.stops : defaultStops
+  );
+  const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
+  const [budget, setBudget] = useState(() => (saved && saved.budget) || "mid");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
@@ -644,9 +669,24 @@ function Tour({ tweaks }) {
     };
   }, [DEMO_TOUR]);
 
-  const [tour, setTour] = useState(initialDemo);
-  const [geometry, setGeometry] = useState(initialDemo()._geom);
+  const [tour, setTour] = useState(() => (saved && saved.tour) || initialDemo());
+  const [geometry, setGeometry] = useState(() => (saved && saved.geometry) || initialDemo()._geom);
   const [saveFeedback, setSaveFeedback] = useState(null);
+
+  // Auto-persist the full state on any change so tab switches and reloads
+  // restore the user's tour. Also write the lightweight ridePrep:tours record
+  // so Training picks up edits without an explicit Save click.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        TOUR_STATE_KEY,
+        JSON.stringify({ tour, geometry, stops, dailyKm, budget })
+      );
+    } catch {}
+    if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
+      saveTourToStorage(tour);
+    }
+  }, [tour, geometry, stops, dailyKm, budget]);
 
   const handleSave = useCallback(() => {
     const id = saveTourToStorage(tour);

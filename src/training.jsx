@@ -775,7 +775,6 @@ function WorkoutDetail({ week, dayIndex, fitnessMode }) {
             <span>{workout.type}</span>
           </div>
         </div>
-        <button className="btn btn-primary">Start</button>
       </div>
 
       {plain && (
@@ -1110,7 +1109,6 @@ function PrintView({ plan, planInputs }) {
           )}
           <dt>Estimated FTP</dt><dd>{meta.estimatedFTP} W</dd>
           <dt>Weekly hours target</dt><dd>{meta.weeklyHoursTarget} hrs</dd>
-          <dt>Pathway</dt><dd>{meta.pathway === "timeCrunched" ? "Time-crunched" : "Default"}</dd>
         </dl>
       </section>
 
@@ -1123,6 +1121,9 @@ function PrintView({ plan, planInputs }) {
           <dd>Wk {peak.number} · {peak.totalHours} hrs · TSS {peak.totalTSS}</dd>
           {tierLabel && (<><dt>Climbing</dt><dd>{tierLabel} · {meta.climbingDensity} m/km</dd></>)}
           <dt>Phases</dt><dd>{phaseLine}</dd>
+          {meta.pathway === "timeCrunched" && (
+            <><dt>Note</dt><dd>Time-crunched plan, optimised for ≤8 hours per week.</dd></>
+          )}
         </dl>
       </section>
 
@@ -1234,6 +1235,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   // Persist inputs.
   useEffect(() => {
     try { window.localStorage.setItem(INPUTS_KEY, JSON.stringify(planInputs)); } catch {}
+    window.dispatchEvent(new CustomEvent("rideprep:inputs-changed", { detail: planInputs }));
   }, [planInputs]);
 
   // Auto-dismiss the confirmation banner. A ref-managed timer ensures that
