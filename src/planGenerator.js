@@ -192,10 +192,8 @@ function computeWeeklyHours(weekNum, peakHours, pathway, phase, phases) {
     hours = peakHours * (startFrac + (1 - startFrac) * t);
   }
 
-  // Recovery: every 4th week, but not in Peak/Taper, and never the week
-  // immediately before Peak begins (we want to enter Peak fresh but loaded).
-  let isRecovery = (weekNum % 4 === 0) && phaseName !== "Peak" && phaseName !== "Taper";
-  if (isRecovery && peakPhase && weekNum + 1 === peakPhase.startWeek) isRecovery = false;
+  // Recovery: every 4th week, but not in Peak/Taper.
+  const isRecovery = (weekNum % 4 === 0) && phaseName !== "Peak" && phaseName !== "Taper";
   if (isRecovery) hours *= 0.70;
 
   return { hours: Math.round(hours * 10) / 10, isRecovery };
@@ -397,6 +395,22 @@ function shortOpener() {
 // Per-week composer
 // ============================================================================
 
+// Peak Long Ride duration (minutes), anchored to event type and distance.
+// For Long Tour, target ~70% of a typical daily stage (eventDistance / 6).
+function peakLongRideMinutes(eventType, eventDistance) {
+  if (!eventDistance || eventDistance <= 0) return 120;
+  let hours;
+  if (eventType === "Long Tour") {
+    hours = Math.min(5, (eventDistance / 6) / 25);
+  } else if (eventType === "Sportive") {
+    hours = Math.min(6, eventDistance / 40);
+  } else {
+    hours = Math.min(4, eventDistance / 50);
+  }
+  hours = Math.max(1, hours);
+  return Math.round(hours * 60 / 5) * 5;
+}
+
 // Climbing tier from event m/km. Used for elevation suggestions on endurance
 // and long rides, and for the UI metric display. No dedicated climbing
 // workouts exist; instead, regular rides carry an elevation target.
@@ -440,7 +454,8 @@ function intensityBuildersForPhase(phase, pathway, eventType) {
 }
 
 function composeWeek(ctx) {
-  const { weekNum, hours, isRecovery, phase, eventType, climbingTier, climbingDensity, pathway } = ctx;
+  const { weekNum, hours, isRecovery, phase, phases, eventType, eventDistance,
+          climbingTier, climbingDensity, pathway } = ctx;
 
   // Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6.
   const days = [
@@ -453,31 +468,63 @@ function composeWeek(ctx) {
     { day: "Sun", workout: null },
   ];
 
-  // Number of active days scales with weekly volume.
+  // Number of active days scales with weekly volume. Time-crunched plans
+  // pack 2-4 days; default plans 3-6.
   let activeDays;
-  if (hours < 4)      activeDays = 3;
-  else if (hours < 6) activeDays = 4;
-  else if (hours < 9) activeDays = 5;
-  else                activeDays = 6;
+  if (pathway === "timeCrunched") {
+    if (hours < 5)      activeDays = 2;  // Tue + Sat
+    else if (hours < 7) activeDays = 3;  // Tue + Thu + Sat
+    else                activeDays = 4;  // Tue + Thu + Sat + Sun
+  } else {
+    if (hours < 4)      activeDays = 3;
+    else if (hours < 6) activeDays = 4;
+    else if (hours < 9) activeDays = 5;
+    else                activeDays = 6;
+  }
 
   const totalMin = Math.round(hours * 60);
 
-  // Long-ride share: tour > sportive > race.
-  const longShare = eventType === "Long Tour" ? 0.40
-                  : eventType === "Sportive"  ? 0.35
-                  : 0.30;
+  // Long ride is anchored to an event-derived peak and ramped to that peak
+  // at the end of Peak phase, so LR length tracks event demand not weekly hours.
+  const peakLrMin = peakLongRideMinutes(eventType, eventDistance);
 
-  // Long-ride duration cap by phase / pathway.
+  const peakPhaseForLr = phases.find(p => p.name === "Peak");
+  const taperPhaseForLr = phases.find(p => p.name === "Taper");
+  const lrRampEnd = peakPhaseForLr
+    ? peakPhaseForLr.endWeek
+    : (taperPhaseForLr ? taperPhaseForLr.startWeek - 1 : phases[phases.length - 1].endWeek);
+  const lrSpan = Math.max(1, lrRampEnd - 1);
+  const lrT = Math.min(1, Math.max(0, (weekNum - 1) / lrSpan));
+  const lrStartFrac = pathway === "timeCrunched" ? 0.70 : 0.50;
+
+  let longMin;
+  if (phase.name === "Taper") {
+    longMin = Math.round((peakLrMin * 0.4) / 5) * 5;
+  } else {
+    longMin = Math.round((peakLrMin * (lrStartFrac + (1 - lrStartFrac) * lrT)) / 5) * 5;
+  }
+  if (isRecovery) longMin = Math.round((longMin * 0.7) / 5) * 5;
+
+  // Absolute cap by phase / pathway (sanity bound).
   let longCap;
-  if (pathway === "timeCrunched")     longCap = 120;
+  if (pathway === "timeCrunched")     longCap = 150;
   else if (phase.name === "Taper")    longCap = 90;
-  else if (phase.name === "Peak")     longCap = 240;
-  else if (eventType === "Long Tour") longCap = phase.name === "Build" ? 360 : 360;
+  else if (phase.name === "Peak")     longCap = 270;
+  else if (eventType === "Long Tour") longCap = 300;
   else if (eventType === "Sportive")  longCap = 300;
   else                                longCap = 240; // Race
+  longMin = Math.min(longMin, longCap);
 
-  let longMin = Math.min(longCap, Math.round((totalMin * longShare) / 5) * 5);
-  if (isRecovery) longMin = Math.round((longMin * 0.7) / 5) * 5;
+  // Reserve ~60 min per intensity slot so LR can't eat the whole week.
+  const intensitySlotCount =
+    pathway === "timeCrunched"
+      ? (activeDays >= 3 && !isRecovery ? 2 : activeDays >= 2 ? 1 : 0)
+      : (activeDays >= 6 && !isRecovery && (phase.name === "Build" || phase.name === "Peak") ? 3
+         : activeDays >= 5 && !isRecovery ? 2
+         : activeDays >= 3 ? 1 : 0);
+  const reserved = intensitySlotCount * 60;
+  const maxLrByWeek = Math.max(60, totalMin - reserved);
+  longMin = Math.min(longMin, maxLrByWeek);
   longMin = Math.max(60, longMin);
 
   // Build the long ride then annotate with an elevation target for non-flat
@@ -501,13 +548,19 @@ function composeWeek(ctx) {
   let remainingMin = totalMin - longMin;
 
   // Intensity slots — Tue, then Thu, then Wed for high-volume Build/Peak weeks.
+  // Time-crunched plans lean intensity-heavy: even a 2-day week gets Tue.
   const builders = intensityBuildersForPhase(phase, pathway, eventType);
   const slots = [];
-  if (activeDays >= 4) slots.push(1);                       // Tue
-  if (activeDays >= 5 && !isRecovery) slots.push(3);        // Thu
-  if (!isRecovery && activeDays >= 6 && pathway !== "timeCrunched"
-      && (phase.name === "Build" || phase.name === "Peak")) {
-    slots.push(2);                                          // Wed
+  if (pathway === "timeCrunched") {
+    if (activeDays >= 2) slots.push(1);                       // Tue
+    if (activeDays >= 3 && !isRecovery) slots.push(3);        // Thu
+  } else {
+    if (activeDays >= 3) slots.push(1);                       // Tue
+    if (activeDays >= 5 && !isRecovery) slots.push(3);        // Thu
+    if (!isRecovery && activeDays >= 6
+        && (phase.name === "Build" || phase.name === "Peak")) {
+      slots.push(2);                                          // Wed
+    }
   }
 
   for (let i = 0; i < slots.length; i++) {
@@ -540,9 +593,13 @@ function composeWeek(ctx) {
 
   // Endurance / recovery fillers on remaining active days.
   const fillIdx = [];
-  if (activeDays >= 5 && !days[2].workout) fillIdx.push(2); // Wed
-  if (activeDays >= 6 && !days[4].workout) fillIdx.push(4); // Fri
-  if (activeDays >= 4 && !days[6].workout) fillIdx.push(6); // Sun
+  if (pathway === "timeCrunched") {
+    if (activeDays >= 3 && !days[6].workout) fillIdx.push(6); // Sun
+  } else {
+    if (activeDays >= 5 && !days[2].workout) fillIdx.push(2); // Wed
+    if (activeDays >= 6 && !days[4].workout) fillIdx.push(4); // Fri
+    if (activeDays >= 3 && !days[6].workout) fillIdx.push(6); // Sun
+  }
 
   if (fillIdx.length > 0 && remainingMin > 0) {
     const each = Math.max(40, Math.floor((remainingMin / fillIdx.length) / 5) * 5);
@@ -646,7 +703,9 @@ function generatePlan(planInputs) {
       hours,
       isRecovery,
       phase,
+      phases,
       eventType: event.type,
+      eventDistance: event.distance,
       climbingTier,
       climbingDensity: climbingDensityRaw,
       pathway,
