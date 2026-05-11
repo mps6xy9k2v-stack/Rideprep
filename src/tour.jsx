@@ -226,7 +226,8 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
 
   // Init the map once.
   useEffect(() => {
-    const map = L.map(elRef.current, { zoomControl: true, attributionControl: true });
+    const map = L.map(elRef.current, { zoomControl: false, attributionControl: true });
+    L.control.zoom({ position: "topright" }).addTo(map);
     map.setView([47.6, 11.5], 8);
     mapRef.current = map;
     setTimeout(() => map.invalidateSize(), 60);
