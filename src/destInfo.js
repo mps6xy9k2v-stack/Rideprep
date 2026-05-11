@@ -27,7 +27,12 @@ const ENDPOINTS = [
   "https://overpass.kumi.systems/api/interpreter",
 ];
 
-const CACHE_KEY = "ridePrep:destCache:v1";
+// Bumped from v1 -> v2 when the website filter was added: pre-filter
+// payloads cached under v1 would otherwise survive past the filter and
+// keep showing entries without a website. Old keys are also pruned in
+// readCache() below.
+const CACHE_KEY = "ridePrep:destCache:v2";
+const STALE_CACHE_KEYS = ["ridePrep:destCache:v1"];
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 
 const HOTEL_TAGS = "hotel|guest_house|hostel|motel|bed_and_breakfast|chalet|apartment";
@@ -53,6 +58,11 @@ function cacheKeyFor(lat, lng, radiusM) {
 
 function readCache() {
   try {
+    // Drop any stale cache versions so they don't linger in the user's
+    // sessionStorage quota.
+    for (const k of STALE_CACHE_KEYS) {
+      if (window.sessionStorage.getItem(k) != null) window.sessionStorage.removeItem(k);
+    }
     const raw = window.sessionStorage.getItem(CACHE_KEY);
     return raw ? JSON.parse(raw) : {};
   } catch { return {}; }
@@ -114,22 +124,59 @@ function normalize(el) {
   };
 }
 
-function hasWebsite(tags) {
-  if (!tags) return false;
-  return !!(tags.website || tags["contact:website"] || tags.url);
+// Tags we accept as "has a website". Mirrored by the link lookup in
+// DestRow so a row that's kept by the filter always produces a link.
+const WEBSITE_TAG_KEYS = [
+  "website", "contact:website", "url", "contact:url",
+  "website:en", "website:de",
+];
+
+// Treat these placeholder values as "no website".
+const PLACEHOLDER_RE = /^(?:-+|n\/?a|none|unknown|tbd|todo)$/i;
+
+function websiteValue(tags) {
+  if (!tags) return null;
+  for (const k of WEBSITE_TAG_KEYS) {
+    const raw = tags[k];
+    if (typeof raw !== "string") continue;
+    const v = raw.trim();
+    if (v.length < 4) continue;
+    if (PLACEHOLDER_RE.test(v)) continue;
+    return v;
+  }
+  return null;
+}
+
+function hasWebsite(tags) { return websiteValue(tags) != null; }
+
+function debugLog(...args) {
+  if (typeof window !== "undefined" && window.RP_DEBUG_DESTINFO) {
+    // eslint-disable-next-line no-console
+    console.log("[destInfo]", ...args);
+  }
 }
 
 function splitResults(json) {
   const hotels = [];
   const restaurants = [];
+  const droppedSamples = [];
+  let totalEligible = 0;
   for (const el of json.elements || []) {
     const kind = classify(el);
     if (!kind) continue;
     const item = normalize(el);
     if (!item.name) continue;                 // hide unnamed entries
-    if (!hasWebsite(item.tags)) continue;     // require a website tag
+    totalEligible++;
+    if (!hasWebsite(item.tags)) {
+      if (droppedSamples.length < 3) droppedSamples.push({ name: item.name, tags: item.tags });
+      continue;
+    }
     (kind === "hotel" ? hotels : restaurants).push(item);
   }
+  debugLog(
+    `kept ${hotels.length + restaurants.length}/${totalEligible} named POIs after website filter`,
+    "drop sample:", droppedSamples
+  );
   // De-dup by name+coord (some places appear as both node and way).
   const dedupe = (arr) => {
     const seen = new Set();
@@ -180,6 +227,8 @@ async function fetchDestinationInfo(lat, lng, radiusM = 5000) {
 
 function clearCache() { writeCache({}); }
 
-window.RP_DestInfo = { fetchDestinationInfo, clearCache };
+// websiteValue is exported so render code uses the same logic as the
+// filter — a row that survives the filter is guaranteed to produce a link.
+window.RP_DestInfo = { fetchDestinationInfo, clearCache, websiteValue, WEBSITE_TAG_KEYS };
 
 })();

@@ -639,7 +639,13 @@ function DestRow({ item }) {
   if (t.stars)           meta.push(`${t.stars}★`);
   if (t["addr:city"] || t["addr:street"]) meta.push(formatAddress(t));
 
-  const website = t.website || t["contact:website"] || t.url;
+  // Use the same lookup destInfo uses for filtering, so a row that passed
+  // the filter always renders a link. Defensive guard: if no link comes
+  // back (shouldn't happen post-filter), don't render the row at all.
+  const website = window.RP_DestInfo && window.RP_DestInfo.websiteValue
+    ? window.RP_DestInfo.websiteValue(t)
+    : (t.website || t["contact:website"] || t.url || t["contact:url"]);
+  if (!website) return null;
 
   return (
     <li className="dest-row">
@@ -647,11 +653,9 @@ function DestRow({ item }) {
         <div className="dest-name">{item.name}</div>
         {meta.length > 0 && <div className="dest-meta">{meta.join(" · ")}</div>}
       </div>
-      {website && (
-        <div className="dest-links">
-          <a href={absUrl(website)} target="_blank" rel="noopener noreferrer">Website</a>
-        </div>
-      )}
+      <div className="dest-links">
+        <a href={absUrl(website)} target="_blank" rel="noopener noreferrer">Website</a>
+      </div>
     </li>
   );
 }
