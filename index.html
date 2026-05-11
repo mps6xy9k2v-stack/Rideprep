@@ -1318,13 +1318,15 @@ input[type="range"]::-moz-range-thumb {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.5);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   display: grid;
   place-items: center;
   padding: 40px 20px;
-  z-index: 100;
+  /* Leaflet's internal panes and controls go up to ~700; site chrome uses
+     1000. Modal must sit above both. */
+  z-index: 2000;
   animation: modal-fade .18s ease;
   overflow: hidden;
 }
@@ -1377,12 +1379,14 @@ input[type="range"]::-moz-range-thumb {
 .modal-close:hover { color: var(--fg); border-color: var(--line-strong); }
 .modal-body {
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   display: grid;
   align-content: start;
   gap: 22px;
   padding-right: 8px;
   min-height: 0;
+  touch-action: pan-y;
 }
 .gloss-section h3 {
   margin: 0 0 10px;

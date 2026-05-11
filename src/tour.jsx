@@ -578,14 +578,14 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
               <DestSection
                 title="Hotels"
                 items={state.data.hotels}
-                emptyLabel={`No hotels found within ${radiusKm} km of ${cityShort}.`}
+                emptyLabel={`No hotels with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
                 radiusM={radiusM}
                 onExpand={() => setRadiusM(10000)}
               />
               <DestSection
                 title="Restaurants"
                 items={state.data.restaurants}
-                emptyLabel={`No restaurants found within ${radiusKm} km of ${cityShort}.`}
+                emptyLabel={`No restaurants with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
                 radiusM={radiusM}
                 onExpand={() => setRadiusM(10000)}
               />
@@ -628,6 +628,8 @@ function DestSection({ title, items, emptyLabel, radiusM, onExpand }) {
 }
 
 // Renders only fields that OSM actually provided. We never invent values.
+// The destInfo filter guarantees a website tag is present — phone/email are
+// intentionally not displayed even when OSM has them.
 function DestRow({ item }) {
   const t = item.tags || {};
   const meta = [];
@@ -637,9 +639,7 @@ function DestRow({ item }) {
   if (t.stars)           meta.push(`${t.stars}★`);
   if (t["addr:city"] || t["addr:street"]) meta.push(formatAddress(t));
 
-  const phone = t.phone || t["contact:phone"];
   const website = t.website || t["contact:website"] || t.url;
-  const email = t.email || t["contact:email"];
 
   return (
     <li className="dest-row">
@@ -647,13 +647,9 @@ function DestRow({ item }) {
         <div className="dest-name">{item.name}</div>
         {meta.length > 0 && <div className="dest-meta">{meta.join(" · ")}</div>}
       </div>
-      {(phone || website || email) && (
+      {website && (
         <div className="dest-links">
-          {website && (
-            <a href={absUrl(website)} target="_blank" rel="noopener noreferrer">Website</a>
-          )}
-          {phone && <a href={`tel:${phone.replace(/\s+/g, "")}`}>{phone}</a>}
-          {email && <a href={`mailto:${email}`}>Email</a>}
+          <a href={absUrl(website)} target="_blank" rel="noopener noreferrer">Website</a>
         </div>
       )}
     </li>

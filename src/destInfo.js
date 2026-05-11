@@ -114,6 +114,11 @@ function normalize(el) {
   };
 }
 
+function hasWebsite(tags) {
+  if (!tags) return false;
+  return !!(tags.website || tags["contact:website"] || tags.url);
+}
+
 function splitResults(json) {
   const hotels = [];
   const restaurants = [];
@@ -122,6 +127,7 @@ function splitResults(json) {
     if (!kind) continue;
     const item = normalize(el);
     if (!item.name) continue;                 // hide unnamed entries
+    if (!hasWebsite(item.tags)) continue;     // require a website tag
     (kind === "hotel" ? hotels : restaurants).push(item);
   }
   // De-dup by name+coord (some places appear as both node and way).
