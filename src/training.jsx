@@ -547,13 +547,12 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
 
   return (
     <div className="plan-hero">
-      <Tooltip content="Glossary of cycling training terms" side="bottom">
-        <button
-          className="glossary-trigger"
-          onClick={onOpenGlossary}
-          aria-label="Open glossary"
-        >?</button>
-      </Tooltip>
+      <button
+        className="glossary-trigger"
+        onClick={onOpenGlossary}
+        aria-label="Open glossary"
+        title="Glossary of cycling training terms"
+      >?</button>
 
       <div className="plan-meta">
         <div>
@@ -836,11 +835,11 @@ const ZONES_LABEL_FTP = {
 
 const ZONES_FEEL = {
   Z1: "Active Recovery · Very easy, fully relaxed",
-  Z2: "Endurance · Easy, can hold a conversation",
-  Z3: "Tempo · Moderate, breathing harder but still speakable",
-  Z4: "Threshold · Hard, only short sentences",
-  Z5: "VO2max · Very hard, breathing heavily",
-  Z6: "Anaerobic · All-out effort, unsustainable",
+  Z2: "Endurance · Easy, conversational pace",
+  Z3: "Tempo · Moderate, breathing harder",
+  Z4: "Threshold · Hard, short sentences only",
+  Z5: "VO2max · Very hard, heavy breathing",
+  Z6: "Anaerobic · All-out, unsustainable",
 };
 
 function zoneDetail(zoneId, fitnessMode) {
