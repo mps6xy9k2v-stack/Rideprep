@@ -341,6 +341,31 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
   );
 }
 
+// Local-time "today" as YYYY-MM-DD — used as the min for the date picker
+// so past dates are non-selectable regardless of the user's timezone.
+function todayLocalIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Map a "YYYY-MM-DD" start date + zero-based stage index to a calendar
+// Date at local midnight (no UTC parsing — avoids off-by-one near DST/0).
+function stageDate(startIso, stageIdx) {
+  if (!startIso) return null;
+  const m = String(startIso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  d.setDate(d.getDate() + stageIdx);
+  return d;
+}
+
+const STAGE_DATE_FMT = new Intl.DateTimeFormat(undefined, {
+  weekday: "short", month: "short", day: "numeric",
+});
+
 // ---------- Tour form ----------
 function StopMarker({ kind }) {
   // kind: "start" | "mid" | "end"
@@ -357,7 +382,8 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, onSave, saveFeedback, loading, error }) {
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, startDate, setStartDate, onPlan, onSave, saveFeedback, loading, error }) {
+  const todayIso = todayLocalIso();
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -431,6 +457,17 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         })}
       </div>
 
+      <div className="input-field">
+        <label htmlFor="tour-start-date">Event Start Date</label>
+        <input
+          id="tour-start-date"
+          type="date"
+          min={todayIso}
+          value={startDate || ""}
+          onChange={(e) => setStartDate(e.target.value || null)}
+        />
+      </div>
+
       <div className="range-row">
         <div className="range-label">
           <span className="tag">Daily distance</span>
@@ -494,13 +531,15 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
 }
 
 // ---------- Itinerary list ----------
-function Itinerary({ tour, activeStage, setActiveStage, budget, units }) {
+function Itinerary({ tour, activeStage, setActiveStage, budget, units, startDate }) {
   const { fmtKm, fmtElev } = window.RP_SHARED;
   return (
     <div className="itinerary">
       {(tour.stages || []).map((s, i) => {
         const fake = s.hotel ? null : makeFakeHotel(s.to, budget);
         const hotel = s.hotel ? { hotel: s.hotel, price: s.price, rating: s.rating } : fake;
+        const d = stageDate(startDate, i);
+        const dateLabel = d ? STAGE_DATE_FMT.format(d) : null;
         return (
           <div
             key={i}
@@ -513,6 +552,7 @@ function Itinerary({ tour, activeStage, setActiveStage, budget, units }) {
                 <span>{s.from}</span>
                 <span className="arrow">→</span>
                 <span>{s.to}</span>
+                {dateLabel && <span className="stage-date">{dateLabel}</span>}
               </div>
               <div className="stage-stats">
                 <span><strong>{fmtKm(s.km, units)}</strong></span>
@@ -624,6 +664,11 @@ function Tour({ tweaks }) {
   );
   const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
   const [budget, setBudget] = useState(() => (saved && saved.budget) || "mid");
+  const [startDate, setStartDate] = useState(() => {
+    const persisted = saved && saved.startDate;
+    if (!persisted) return null;
+    return persisted < todayLocalIso() ? null : persisted;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
@@ -680,13 +725,23 @@ function Tour({ tweaks }) {
     try {
       window.localStorage.setItem(
         TOUR_STATE_KEY,
-        JSON.stringify({ tour, geometry, stops, dailyKm, budget })
+        JSON.stringify({ tour, geometry, stops, dailyKm, budget, startDate })
       );
     } catch {}
     if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
       saveTourToStorage(tour);
     }
-  }, [tour, geometry, stops, dailyKm, budget]);
+  }, [tour, geometry, stops, dailyKm, budget, startDate]);
+
+  const canDownloadIcs = !!startDate && !!tour && Array.isArray(tour.stages) && tour.stages.length > 0;
+
+  const handleDownloadIcs = useCallback(() => {
+    if (!canDownloadIcs || !window.RP_IcsExport) return;
+    const fromS = (tour.from || "tour").split(",")[0].trim().replace(/\s+/g, "-");
+    const toS = (tour.to || "end").split(",")[0].trim().replace(/\s+/g, "-");
+    const filename = `RidePrep-Tour-${fromS}-to-${toS}-${startDate}.ics`;
+    window.RP_IcsExport.downloadTourIcs(tour, startDate, filename);
+  }, [canDownloadIcs, tour, startDate]);
 
   const handleSave = useCallback(() => {
     const id = saveTourToStorage(tour);
@@ -758,6 +813,7 @@ function Tour({ tweaks }) {
             stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             budget={budget} setBudget={setBudget}
+            startDate={startDate} setStartDate={setStartDate}
             onPlan={planRoute}
             onSave={handleSave}
             saveFeedback={saveFeedback}
@@ -779,7 +835,22 @@ function Tour({ tweaks }) {
             setActiveStage={setActiveStage}
             budget={budget}
             units={tweaks.units}
+            startDate={startDate}
           />
+          <div className="plan-actions">
+            <button
+              className="btn btn-ghost download-ics-btn"
+              onClick={handleDownloadIcs}
+              disabled={!canDownloadIcs}
+              title={
+                !startDate ? "Pick an Event Start Date to enable calendar export"
+                : !tour || !tour.stages || tour.stages.length === 0 ? "Plan a route first"
+                : "Import into Apple Calendar, Google Calendar, Outlook, etc."
+              }
+            >
+              <span aria-hidden="true">⬇</span> Add Tour to Calendar (.ics)
+            </button>
+          </div>
         </div>
       </div>
     </div>
