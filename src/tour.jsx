@@ -1,4 +1,4 @@
-/* global window, React, L */
+/* global window, React, ReactDOM, L */
 // Tour planner: form + Leaflet map with OpenRouteService routing.
 (() => {
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
@@ -516,12 +516,16 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
   const [radiusM, setRadiusM] = useState(5000);
   const [retryNonce, setRetryNonce] = useState(0);
   const [state, setState] = useState({ status: "loading", data: null, error: null });
+  const closeBtnRef = useRef(null);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    // Focus the close button so Esc works immediately and screen
+    // readers announce that a dialog opened.
+    closeBtnRef.current && closeBtnRef.current.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
@@ -551,7 +555,10 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
   const cityShort = String(cityLabel || "").split(",")[0].trim() || "destination";
   const radiusKm = Math.round(radiusM / 1000);
 
-  return (
+  // Render via portal directly into document.body so no ancestor's
+  // animated transform/filter can create a containing block that
+  // would re-scope our position: fixed overlay to a sub-region.
+  return ReactDOM.createPortal(
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -564,7 +571,7 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
               >OpenStreetMap contributors</a>
             </p>
           </div>
-          <button className="modal-close" onClick={onClose} aria-label="Close destination info">×</button>
+          <button ref={closeBtnRef} className="modal-close" onClick={onClose} aria-label="Close destination info">×</button>
         </div>
         <div className="modal-body">
           {state.status === "loading" && <DestSkeleton />}
@@ -594,7 +601,8 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
