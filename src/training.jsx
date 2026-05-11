@@ -1342,6 +1342,12 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     window.print();
   }
 
+  function handleDownloadIcs() {
+    if (!generatedPlan || !window.RP_IcsExport) return;
+    const filename = `${buildPlanFilename(generatedPlan)}.ics`;
+    window.RP_IcsExport.downloadIcs(generatedPlan, planStartDate(), filename);
+  }
+
   const currentWeek = generatedPlan ? generatedPlan.weeks[selectedWeek - 1] : null;
 
   return (
@@ -1416,12 +1422,21 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               plan={generatedPlan}
               currentWeekPhase={currentWeek && currentWeek.phase}
             />
-            <button
-              className="btn btn-ghost download-pdf-btn"
-              onClick={handleDownloadPdf}
-            >
-              <span aria-hidden="true">⬇</span> Download as PDF
-            </button>
+            <div className="plan-actions">
+              <button
+                className="btn btn-ghost download-pdf-btn"
+                onClick={handleDownloadPdf}
+              >
+                <span aria-hidden="true">⬇</span> Download as PDF
+              </button>
+              <button
+                className="btn btn-ghost download-ics-btn"
+                onClick={handleDownloadIcs}
+                title="Import into Apple Calendar, Google Calendar, Outlook, etc."
+              >
+                <span aria-hidden="true">⬇</span> Add to Calendar (.ics)
+              </button>
+            </div>
             <PrintView plan={generatedPlan} planInputs={planInputs} />
           </>
         )}

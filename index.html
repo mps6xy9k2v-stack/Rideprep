@@ -1472,8 +1472,18 @@ input[type="range"]::-moz-range-thumb {
   to   { opacity: 1; transform: none; }
 }
 
-/* ========== DOWNLOAD AS PDF BUTTON ========== */
-.download-pdf-btn {
+/* ========== PLAN ACTIONS (PDF + ICS) ========== */
+.plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plan-actions .btn {
+  flex: 1 1 200px;
+  justify-content: center;
+}
+.download-pdf-btn,
+.download-ics-btn {
   width: 100%;
   justify-content: center;
 }
@@ -1701,6 +1711,7 @@ input[type="range"]::-moz-range-thumb {
 <script type="text/babel" data-presets="react" src="./src/data.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/shared.jsx"></script>
 <script src="./src/planGenerator.js"></script>
+<script src="./src/icsExport.js"></script>
 <script type="text/babel" data-presets="react" src="./src/training.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tour.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tweaks.jsx"></script>
