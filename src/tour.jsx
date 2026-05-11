@@ -182,13 +182,6 @@ function estHours(km, ascent) {
   return `${hh}:${String(mm).padStart(2, "0")}`;
 }
 
-function makeFakeHotel(cityName, budget) {
-  const tier = budget === "low" ? { p: 65, name: "Pension", rate: "4.1★" }
-            : budget === "hi"  ? { p: 220, name: "Grand Hotel", rate: "4.7★" }
-            :                     { p: 130, name: "Hotel", rate: "4.5★" };
-  return { hotel: `${tier.name} ${cityName.split(",")[0]}`, price: `€${tier.p}`, rating: tier.rate };
-}
-
 // ---------- Map subcomponent ----------
 function makeTileLayer(style) {
   switch (style) {
@@ -382,7 +375,7 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, startDate, setStartDate, onPlan, onSave, saveFeedback, loading, error }) {
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, onSave, saveFeedback, loading, error }) {
   const todayIso = todayLocalIso();
   return (
     <div className="card stack" style={{ gap: 14 }}>
@@ -481,25 +474,6 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         />
       </div>
 
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-          <span className="mono faint" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".1em" }}>Budget</span>
-          <span className="mono dim" style={{ fontSize: 12 }}>{budget === "low" ? "€" : budget === "mid" ? "€€" : "€€€"}</span>
-        </div>
-        <div className="seg">
-          {[["low", "Low"], ["mid", "Mid"], ["hi", "High"]].map(([k, v]) => (
-            <button key={k} aria-pressed={budget === k} onClick={() => setBudget(k)}>{v}</button>
-          ))}
-        </div>
-        <div className="budget-visual">
-          {[0, 1, 2].map((i) => {
-            const lvl = { low: 0, mid: 1, hi: 2 }[budget];
-            const tier = budget === "low" ? "low" : budget === "mid" ? "mid" : "hi";
-            return <div key={i} className={"budget-seg " + (i <= lvl ? "on " + tier : "")} />;
-          })}
-        </div>
-      </div>
-
       <div className="btn-row">
         <button className="btn btn-primary" onClick={onPlan} disabled={loading} style={{ flex: 1, opacity: loading ? 0.7 : 1 }}>
           {loading ? "Planning…" : "Plan route"}
@@ -530,16 +504,194 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
   );
 }
 
+// ---------- Destination detail modal ----------
+//
+// Lazy-loads hotels and restaurants within `radiusM` of (lat, lng) via
+// the Overpass API on mount. Reuses the existing .modal-overlay / .modal
+// CSS so it matches the glossary modal visually. The fetch result is
+// cached in sessionStorage by window.RP_DestInfo so reopening the same
+// destination doesn't hit the API again.
+function DestinationModal({ cityLabel, lat, lng, onClose }) {
+  const [radiusM, setRadiusM] = useState(5000);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [state, setState] = useState({ status: "loading", data: null, error: null });
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!window.RP_DestInfo) {
+      setState({ status: "error", data: null, error: "Destination service unavailable." });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading", data: null, error: null });
+    window.RP_DestInfo
+      .fetchDestinationInfo(lat, lng, radiusM)
+      .then((data) => { if (!cancelled) setState({ status: "ready", data, error: null }); })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg = e && e.name === "AbortError"
+          ? "The destination service took too long to respond. Please try again."
+          : "Couldn't load destination info right now — please try again in a moment.";
+        setState({ status: "error", data: null, error: msg });
+      });
+    return () => { cancelled = true; };
+  }, [lat, lng, radiusM, retryNonce]);
+
+  const cityShort = String(cityLabel || "").split(",")[0].trim() || "destination";
+  const radiusKm = Math.round(radiusM / 1000);
+
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h2>{cityShort}</h2>
+            <p className="modal-sub">
+              Hotels and restaurants within {radiusKm} km · data © <a
+                href="https://www.openstreetmap.org/copyright"
+                target="_blank" rel="noopener noreferrer"
+              >OpenStreetMap contributors</a>
+            </p>
+          </div>
+          <button className="modal-close" onClick={onClose} aria-label="Close destination info">×</button>
+        </div>
+        <div className="modal-body">
+          {state.status === "loading" && <DestSkeleton />}
+          {state.status === "error" && (
+            <div className="dest-error">
+              <p>{state.error}</p>
+              <button className="btn btn-ghost" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
+            </div>
+          )}
+          {state.status === "ready" && (
+            <>
+              <DestSection
+                title="Hotels"
+                items={state.data.hotels}
+                emptyLabel={`No hotels found within ${radiusKm} km of ${cityShort}.`}
+                radiusM={radiusM}
+                onExpand={() => setRadiusM(10000)}
+              />
+              <DestSection
+                title="Restaurants"
+                items={state.data.restaurants}
+                emptyLabel={`No restaurants found within ${radiusKm} km of ${cityShort}.`}
+                radiusM={radiusM}
+                onExpand={() => setRadiusM(10000)}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DestSkeleton() {
+  return (
+    <div className="dest-skeleton" aria-busy="true">
+      <div className="dest-skel-row" />
+      <div className="dest-skel-row" />
+      <div className="dest-skel-row" />
+    </div>
+  );
+}
+
+function DestSection({ title, items, emptyLabel, radiusM, onExpand }) {
+  return (
+    <section className="dest-section">
+      <h3>{title} <span className="dest-count">{items.length}</span></h3>
+      {items.length === 0 ? (
+        <div className="dest-empty">
+          <p>{emptyLabel}</p>
+          {radiusM < 10000 && (
+            <button className="btn btn-ghost" onClick={onExpand}>Search wider (10 km)</button>
+          )}
+        </div>
+      ) : (
+        <ul className="dest-list">
+          {items.map((it) => <DestRow key={it.id} item={it} />)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Renders only fields that OSM actually provided. We never invent values.
+function DestRow({ item }) {
+  const t = item.tags || {};
+  const meta = [];
+  const kind = t.tourism || t.amenity;
+  if (kind) meta.push(prettyKind(kind));
+  if (t.cuisine)         meta.push(t.cuisine.replace(/_/g, " ").replace(/;/g, ", "));
+  if (t.stars)           meta.push(`${t.stars}★`);
+  if (t["addr:city"] || t["addr:street"]) meta.push(formatAddress(t));
+
+  const phone = t.phone || t["contact:phone"];
+  const website = t.website || t["contact:website"] || t.url;
+  const email = t.email || t["contact:email"];
+
+  return (
+    <li className="dest-row">
+      <div className="dest-main">
+        <div className="dest-name">{item.name}</div>
+        {meta.length > 0 && <div className="dest-meta">{meta.join(" · ")}</div>}
+      </div>
+      {(phone || website || email) && (
+        <div className="dest-links">
+          {website && (
+            <a href={absUrl(website)} target="_blank" rel="noopener noreferrer">Website</a>
+          )}
+          {phone && <a href={`tel:${phone.replace(/\s+/g, "")}`}>{phone}</a>}
+          {email && <a href={`mailto:${email}`}>Email</a>}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function prettyKind(k) {
+  return ({
+    hotel: "Hotel", guest_house: "Guest house", hostel: "Hostel",
+    motel: "Motel", bed_and_breakfast: "B&B", chalet: "Chalet",
+    apartment: "Apartment",
+    restaurant: "Restaurant", cafe: "Café", pub: "Pub", bar: "Bar",
+    bistro: "Bistro", fast_food: "Fast food",
+  }[k]) || k;
+}
+
+function formatAddress(t) {
+  const street = [t["addr:street"], t["addr:housenumber"]].filter(Boolean).join(" ");
+  const city = [t["addr:postcode"], t["addr:city"]].filter(Boolean).join(" ");
+  return [street, city].filter(Boolean).join(", ");
+}
+
+function absUrl(u) {
+  if (/^https?:\/\//i.test(u)) return u;
+  return `https://${u}`;
+}
+
 // ---------- Itinerary list ----------
-function Itinerary({ tour, activeStage, setActiveStage, budget, units, startDate }) {
+function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geometry, onOpenDest }) {
   const { fmtKm, fmtElev } = window.RP_SHARED;
   return (
     <div className="itinerary">
       {(tour.stages || []).map((s, i) => {
-        const fake = s.hotel ? null : makeFakeHotel(s.to, budget);
-        const hotel = s.hotel ? { hotel: s.hotel, price: s.price, rating: s.rating } : fake;
         const d = stageDate(startDate, i);
         const dateLabel = d ? STAGE_DATE_FMT.format(d) : null;
+        const coord = (geometry && s.endIdx != null) ? geometry[s.endIdx] : null;
+        const hasCoord = Array.isArray(coord) && coord.length >= 2
+          && Number.isFinite(coord[0]) && Number.isFinite(coord[1]);
         return (
           <div
             key={i}
@@ -559,22 +711,23 @@ function Itinerary({ tour, activeStage, setActiveStage, budget, units, startDate
                 <span><strong>↑ {fmtElev(s.ascent, units)}</strong></span>
                 <span><strong>{s.hours}</strong> hrs</span>
               </div>
-              {hotel && (
-                <div className="hotel-chip">
-                  <div className="hotel-thumb" />
-                  <div className="hotel-body">
-                    <div className="hotel-name">{hotel.hotel}</div>
-                    <div className="hotel-meta">
-                      <span>{hotel.rating}</span>
-                      <span>{s.to.split(",")[0]}</span>
-                    </div>
-                  </div>
-                  <div className="hotel-price">
-                    {hotel.price}
-                    <em>/ night</em>
-                  </div>
-                </div>
-              )}
+              <button
+                type="button"
+                className="btn btn-ghost stage-dest-btn"
+                disabled={!hasCoord}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!hasCoord) return;
+                  onOpenDest({
+                    cityLabel: s.to,
+                    lat: coord[1],
+                    lng: coord[0],
+                  });
+                }}
+                title={hasCoord ? "" : "Coordinates not available for this stage"}
+              >
+                Find out more about your destination
+              </button>
             </div>
           </div>
         );
@@ -589,10 +742,6 @@ function SummaryBar({ tour, units }) {
   const totalKm = tour.totalKm ?? (tour.stages || []).reduce((a, b) => a + b.km, 0);
   const totalAsc = tour.totalAscent ?? (tour.stages || []).reduce((a, b) => a + b.ascent, 0);
   const days = (tour.stages || []).length;
-  const cost = (tour.stages || []).reduce((sum, s) => {
-    const p = s.price ? +String(s.price).replace(/[^\d]/g, "") : 0;
-    return sum + p;
-  }, 0);
 
   return (
     <div className="summary-bar">
@@ -607,10 +756,6 @@ function SummaryBar({ tour, units }) {
       <div className="summary-cell">
         <span className="lbl">Ascent</span>
         <span className="big">{fmtElev(totalAsc, units)}</span>
-      </div>
-      <div className="summary-cell">
-        <span className="lbl">Lodging</span>
-        <span className="big">€{cost}</span>
       </div>
     </div>
   );
@@ -663,7 +808,6 @@ function Tour({ tweaks }) {
     (saved && Array.isArray(saved.stops) && saved.stops.length >= 2) ? saved.stops : defaultStops
   );
   const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
-  const [budget, setBudget] = useState(() => (saved && saved.budget) || "mid");
   const [startDate, setStartDate] = useState(() => {
     const persisted = saved && saved.startDate;
     if (!persisted) return null;
@@ -672,6 +816,7 @@ function Tour({ tweaks }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
+  const [destView, setDestView] = useState(null);   // { cityLabel, lat, lng } | null
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
@@ -725,13 +870,13 @@ function Tour({ tweaks }) {
     try {
       window.localStorage.setItem(
         TOUR_STATE_KEY,
-        JSON.stringify({ tour, geometry, stops, dailyKm, budget, startDate })
+        JSON.stringify({ tour, geometry, stops, dailyKm, startDate })
       );
     } catch {}
     if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
       saveTourToStorage(tour);
     }
-  }, [tour, geometry, stops, dailyKm, budget, startDate]);
+  }, [tour, geometry, stops, dailyKm, startDate]);
 
   const canDownloadIcs = !!startDate && !!tour && Array.isArray(tour.stages) && tour.stages.length > 0;
 
@@ -780,10 +925,6 @@ function Tour({ tweaks }) {
       }
 
       const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
-      itin.stages = itin.stages.map((s) => ({
-        ...s,
-        ...makeFakeHotel(s.to, budget),
-      }));
 
       setTour({
         from: labels[0],
@@ -802,7 +943,7 @@ function Tour({ tweaks }) {
     } finally {
       setLoading(false);
     }
-  }, [stops, dailyKm, budget, initialDemo]);
+  }, [stops, dailyKm, initialDemo]);
 
   return (
     <div className="fade-in">
@@ -812,7 +953,6 @@ function Tour({ tweaks }) {
           <TourForm
             stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
-            budget={budget} setBudget={setBudget}
             startDate={startDate} setStartDate={setStartDate}
             onPlan={planRoute}
             onSave={handleSave}
@@ -833,9 +973,10 @@ function Tour({ tweaks }) {
             tour={tour}
             activeStage={activeStage}
             setActiveStage={setActiveStage}
-            budget={budget}
             units={tweaks.units}
             startDate={startDate}
+            geometry={geometry}
+            onOpenDest={setDestView}
           />
           <div className="plan-actions">
             <button
@@ -853,6 +994,14 @@ function Tour({ tweaks }) {
           </div>
         </div>
       </div>
+      {destView && (
+        <DestinationModal
+          cityLabel={destView.cityLabel}
+          lat={destView.lat}
+          lng={destView.lng}
+          onClose={() => setDestView(null)}
+        />
+      )}
     </div>
   );
 }

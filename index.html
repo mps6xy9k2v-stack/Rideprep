@@ -738,20 +738,6 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 20%, transparent);
 }
 
-.budget-visual {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 2px;
-  height: 4px;
-  margin-top: 4px;
-  border-radius: 2px;
-  overflow: hidden;
-}
-.budget-seg { background: var(--line); transition: background .2s; }
-.budget-seg.on.low { background: var(--ok); }
-.budget-seg.on.mid { background: var(--warm); }
-.budget-seg.on.hi  { background: var(--accent); }
-
 .itinerary { display: grid; gap: 12px; }
 .stage {
   display: grid;
@@ -799,43 +785,86 @@ input[type="range"]::-moz-range-thumb {
 .elev-strip { height: 40px; position: relative; margin-top: 6px; }
 .elev-strip svg { width: 100%; height: 100%; display: block; }
 
-.hotel-chip {
+.stage-dest-btn {
+  padding: 8px 14px;
+  font-size: 12px;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+/* ========== DESTINATION MODAL (OSM POI lists) ========== */
+.dest-section + .dest-section { margin-top: 8px; }
+.dest-section h3 {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-dim);
+  font-weight: 500;
+  display: flex; gap: 8px; align-items: baseline;
+}
+.dest-count {
+  font-size: 10px;
+  color: var(--fg-faint);
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.dest-list {
+  list-style: none; padding: 0; margin: 0;
+  display: grid; gap: 8px;
+}
+.dest-row {
   display: grid;
-  grid-template-columns: 48px 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 12px;
-  align-items: center;
-  padding: 10px;
-  padding-right: 14px;
+  align-items: start;
+  padding: 10px 12px;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  margin-top: 8px;
 }
-.hotel-thumb {
-  width: 48px; height: 48px;
-  border-radius: 10px;
-  background: repeating-linear-gradient(45deg, var(--bg-2) 0 6px, var(--bg-1) 6px 12px);
-  position: relative; overflow: hidden;
+.dest-main { min-width: 0; }
+.dest-name {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
-.hotel-thumb::after {
-  content: "";
-  position: absolute; inset: 0;
-  background: radial-gradient(circle at 70% 30%, color-mix(in oklch, var(--warm) 40%, transparent), transparent 60%);
+.dest-meta {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-top: 2px;
 }
-.hotel-body { min-width: 0; }
-.hotel-name {
-  font-size: 14px; font-weight: 500; letter-spacing: -0.01em;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.dest-links {
+  display: flex; flex-direction: column;
+  gap: 4px; align-items: flex-end;
+  font-size: 12px; white-space: nowrap;
 }
-.hotel-meta {
-  font-family: var(--mono); font-size: 11px; color: var(--fg-dim);
-  display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px;
+.dest-links a { color: var(--accent); }
+.dest-links a:hover { text-decoration: underline; }
+.dest-empty,
+.dest-error {
+  padding: 12px;
+  background: var(--bg);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  font-size: 13px; color: var(--fg-dim);
+  display: grid; gap: 10px; justify-items: start;
 }
-.hotel-price { font-family: var(--mono); font-size: 16px; font-weight: 500; text-align: right; }
-.hotel-price em {
-  display: block; font-style: normal; font-size: 10px;
-  color: var(--fg-faint); text-transform: uppercase;
-  letter-spacing: 0.1em; font-weight: 400; margin-top: 2px;
+.dest-error .btn,
+.dest-empty .btn { padding: 8px 14px; font-size: 12px; }
+.dest-skeleton { display: grid; gap: 10px; }
+.dest-skel-row {
+  height: 44px;
+  background: linear-gradient(90deg, var(--bg) 0%, var(--bg-1) 50%, var(--bg) 100%);
+  background-size: 200% 100%;
+  border-radius: var(--radius);
+  animation: dest-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes dest-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
 }
 
 .btn {
@@ -1719,6 +1748,7 @@ input[type="range"]::-moz-range-thumb {
 <script type="text/babel" data-presets="react" src="./src/shared.jsx"></script>
 <script src="./src/planGenerator.js"></script>
 <script src="./src/icsExport.js"></script>
+<script src="./src/destInfo.js"></script>
 <script type="text/babel" data-presets="react" src="./src/training.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tour.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tweaks.jsx"></script>
