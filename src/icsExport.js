@@ -111,6 +111,17 @@ function uidFor(plan, date) {
   return `rideprep-${eventType}-${eventDate}-${fmtDateBasic(date)}@rideprep.app`;
 }
 
+// RFC 7986 COLOR — CSS3 color names. Supported by clients like Thunderbird;
+// silently ignored by clients that don't (including Apple Calendar today).
+const PHASE_COLOR = {
+  Prep:  "lightsteelblue",
+  Base:  "steelblue",
+  Build: "darkorange",
+  Peak:  "crimson",
+  Taper: "seagreen",
+  Adapt: "slategray",
+};
+
 function addDays(d, n) {
   const out = new Date(d.getTime());
   out.setDate(out.getDate() + n);
@@ -143,6 +154,12 @@ function generateIcs(plan, planStart) {
       const summary = escapeText(summaryFor(day.workout));
       const description = escapeText(descriptionFor(day.workout));
 
+      const phase = week.phase || "";
+      const color = PHASE_COLOR[phase];
+      const categories = ["RidePrep"];
+      if (phase) categories.push(phase);
+      if (week.isRecoveryWeek) categories.push("Recovery");
+
       lines.push("BEGIN:VEVENT");
       lines.push(foldLine(`UID:${uidFor(plan, date)}`));
       lines.push(`DTSTAMP:${dtstamp}`);
@@ -150,6 +167,9 @@ function generateIcs(plan, planStart) {
       lines.push(`DTEND;VALUE=DATE:${fmtDateBasic(next)}`);
       lines.push(foldLine(`SUMMARY:${summary}`));
       lines.push(foldLine(`DESCRIPTION:${description}`));
+      lines.push(foldLine(`CATEGORIES:${categories.map(escapeText).join(",")}`));
+      if (color) lines.push(`COLOR:${color}`);
+      lines.push("STATUS:CONFIRMED");
       lines.push("TRANSP:TRANSPARENT");
       lines.push("END:VEVENT");
     }
