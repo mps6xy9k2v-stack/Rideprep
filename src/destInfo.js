@@ -22,6 +22,8 @@
 
 (() => {
 
+const VERSION = "destInfo@3"; // bump on each fix so we can confirm the live JS
+
 const ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -149,11 +151,10 @@ function websiteValue(tags) {
 
 function hasWebsite(tags) { return websiteValue(tags) != null; }
 
-function debugLog(...args) {
-  if (typeof window !== "undefined" && window.RP_DEBUG_DESTINFO) {
-    // eslint-disable-next-line no-console
-    console.log("[destInfo]", ...args);
-  }
+// Always-on diagnostic logging. Prefixed so it's easy to grep / silence
+// in the console once the filter behavior is confirmed in production.
+function log(...args) {
+  try { console.log("[destInfo]", ...args); } catch {}
 }
 
 function splitResults(json) {
@@ -173,10 +174,12 @@ function splitResults(json) {
     }
     (kind === "hotel" ? hotels : restaurants).push(item);
   }
-  debugLog(
-    `kept ${hotels.length + restaurants.length}/${totalEligible} named POIs after website filter`,
-    "drop sample:", droppedSamples
+  log(
+    `filter: kept ${hotels.length + restaurants.length}/${totalEligible} named POIs (${json.elements ? json.elements.length : 0} raw elements). dropped sample:`,
+    droppedSamples
   );
+  if (hotels.length > 0) log("kept hotel sample:", { name: hotels[0].name, tags: hotels[0].tags });
+  if (restaurants.length > 0) log("kept restaurant sample:", { name: restaurants[0].name, tags: restaurants[0].tags });
   // De-dup by name+coord (some places appear as both node and way).
   const dedupe = (arr) => {
     const seen = new Set();
@@ -225,10 +228,44 @@ async function fetchDestinationInfo(lat, lng, radiusM = 5000) {
   }
 }
 
-function clearCache() { writeCache({}); }
+function clearCache() {
+  writeCache({});
+  try {
+    for (const k of STALE_CACHE_KEYS) window.sessionStorage.removeItem(k);
+  } catch {}
+  log("cache cleared");
+}
+
+// Console helper: window.RP_DestInfo.debug(52.07, 8.10) fetches a real
+// destination, dumps before/after counts, and returns the result. Use it
+// to verify the filter against any real coordinate without going through
+// the modal.
+async function debug(lat, lng, radiusM = 5000) {
+  log("debug() called for", { lat, lng, radiusM });
+  clearCache();
+  const r = await fetchDestinationInfo(lat, lng, radiusM);
+  log("debug() result hotels:", r.hotels.length, "restaurants:", r.restaurants.length);
+  const allHaveLink = [...r.hotels, ...r.restaurants].every((it) => websiteValue(it.tags) != null);
+  log("debug() every kept entry has a website link:", allHaveLink);
+  return r;
+}
+
+// Auto-clear cache when ?destfresh=1 is in the URL — eliminates the
+// browser/sessionStorage cache as a variable when verifying the fix live.
+try {
+  if (typeof window !== "undefined" && window.location
+      && /[?&]destfresh=1\b/.test(window.location.search)) {
+    log("?destfresh=1 detected — wiping caches");
+    clearCache();
+  }
+} catch {}
+
+log(`loaded ${VERSION}, cache key=${CACHE_KEY}`);
 
 // websiteValue is exported so render code uses the same logic as the
 // filter — a row that survives the filter is guaranteed to produce a link.
-window.RP_DestInfo = { fetchDestinationInfo, clearCache, websiteValue, WEBSITE_TAG_KEYS };
+window.RP_DestInfo = {
+  fetchDestinationInfo, clearCache, websiteValue, WEBSITE_TAG_KEYS, debug, VERSION,
+};
 
 })();

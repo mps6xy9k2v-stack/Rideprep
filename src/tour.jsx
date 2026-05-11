@@ -608,10 +608,18 @@ function DestSkeleton() {
 }
 
 function DestSection({ title, items, emptyLabel, radiusM, onExpand }) {
+  // Final defense: even if upstream slipped, the rendered list never contains
+  // a row without a resolvable website. The count badge reflects the
+  // *rendered* count, not the raw count, so it can never mismatch.
+  const wv = window.RP_DestInfo && window.RP_DestInfo.websiteValue;
+  const visible = wv ? items.filter((it) => wv(it.tags) != null) : items;
+  if (visible.length !== items.length) {
+    try { console.log("[destInfo] DestSection", title, "trimmed", items.length - visible.length, "rows missing a website"); } catch {}
+  }
   return (
     <section className="dest-section">
-      <h3>{title} <span className="dest-count">{items.length}</span></h3>
-      {items.length === 0 ? (
+      <h3>{title} <span className="dest-count">{visible.length}</span></h3>
+      {visible.length === 0 ? (
         <div className="dest-empty">
           <p>{emptyLabel}</p>
           {radiusM < 10000 && (
@@ -620,7 +628,7 @@ function DestSection({ title, items, emptyLabel, radiusM, onExpand }) {
         </div>
       ) : (
         <ul className="dest-list">
-          {items.map((it) => <DestRow key={it.id} item={it} />)}
+          {visible.map((it) => <DestRow key={it.id} item={it} />)}
         </ul>
       )}
     </section>
