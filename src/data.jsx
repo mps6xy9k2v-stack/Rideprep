@@ -46,21 +46,24 @@ const SAMPLE_WORKOUT = {
 const PLAN_VOLUME = [180, 220, 260, 200, 290, 230];
 
 // Demo route waypoints, used as fallback when no API key.
+// 5 stages, 120 km / 800 m each — total ~600 km / 4000 m.
 const DEMO_TOUR = {
-  from: "Munich, DE",
-  to:   "Innsbruck, AT",
+  from: "Berlin, DE",
+  to:   "München, DE",
   waypoints: [
-    { name: "Munich",       lat: 48.1351, lng: 11.5820 },
-    { name: "Bad Tölz",     lat: 47.7610, lng: 11.5612 },
-    { name: "Mittenwald",   lat: 47.4439, lng: 11.2667 },
-    { name: "Seefeld",      lat: 47.3293, lng: 11.1880 },
-    { name: "Innsbruck",    lat: 47.2692, lng: 11.4041 },
+    { name: "Berlin",            lat: 52.5200, lng: 13.4050 },
+    { name: "Bitterfeld-Wolfen", lat: 51.6233, lng: 12.3033 },
+    { name: "Erfurt",            lat: 50.9848, lng: 11.0299 },
+    { name: "Coburg",            lat: 50.2601, lng: 10.9637 },
+    { name: "Nürnberg",          lat: 49.4521, lng: 11.0767 },
+    { name: "München",           lat: 48.1351, lng: 11.5820 },
   ],
   stages: [
-    { from: "Munich",     to: "Bad Tölz",   km: 58,  ascent: 410, hours: "3:10", hotel: "Posthotel Kolberbräu", price: "€118", rating: "4.4★" },
-    { from: "Bad Tölz",   to: "Mittenwald", km: 64,  ascent: 920, hours: "4:05", hotel: "Hotel Alpenrose",      price: "€145", rating: "4.6★" },
-    { from: "Mittenwald", to: "Seefeld",    km: 38,  ascent: 680, hours: "2:45", hotel: "Astoria Resort",        price: "€189", rating: "4.7★" },
-    { from: "Seefeld",    to: "Innsbruck",  km: 32,  ascent: 220, hours: "1:50", hotel: "Hotel Innsbruck",       price: "€164", rating: "4.5★" },
+    { from: "Berlin",            to: "Bitterfeld-Wolfen", km: 120, ascent: 800, hours: "6:50", hotel: "Hotel Stadtpark",  price: "€95",  rating: "4.3★" },
+    { from: "Bitterfeld-Wolfen", to: "Erfurt",            km: 120, ascent: 800, hours: "6:50", hotel: "Hotel Zumnorde",   price: "€110", rating: "4.5★" },
+    { from: "Erfurt",            to: "Coburg",            km: 120, ascent: 800, hours: "6:50", hotel: "Hotel Coburg",     price: "€105", rating: "4.4★" },
+    { from: "Coburg",            to: "Nürnberg",          km: 120, ascent: 800, hours: "6:50", hotel: "Hotel Elch",       price: "€130", rating: "4.6★" },
+    { from: "Nürnberg",          to: "München",           km: 120, ascent: 800, hours: "6:50", hotel: "Hotel Laimer Hof", price: "€155", rating: "4.7★" },
   ],
 };
 

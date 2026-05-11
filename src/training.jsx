@@ -1,17 +1,137 @@
 /* global window, React */
 // Training view: plan generator inputs (left) + dynamic plan output (right).
 (() => {
-const { useState, useMemo, useEffect } = React;
+const { useState, useMemo, useEffect, useRef } = React;
+const Tooltip = window.RP_SHARED.Tooltip;
+
+// ── Plain-language tooltip + glossary copy ──────────────────────────────────
+
+const TIP = {
+  totalVolume: "Total training time across all weeks of the plan.",
+  peakWeek:    "Your highest-volume week, usually 2-3 weeks before the event. After this, training tapers off so you arrive fresh.",
+  climbing:    "How hilly your event is, in metres of elevation gain per kilometre. Higher means hillier.",
+  tss:         "Training Stress Score. A measure of how demanding this workout is overall.",
+  if:          "Intensity Factor. How hard the average effort is, as a fraction of your threshold. 1.0 means right at threshold.",
+};
+
+const PHASE_TIPS = {
+  Prep:  "Easing back into structured training. Lower volume, mostly easy riding.",
+  Base:  "Building aerobic endurance with steady, mostly easy rides and some moderate efforts.",
+  Build: "Adding event-specific intensity. Threshold and tempo work alongside endurance volume.",
+  Peak:  "Highest training load. Race-specific intensity to sharpen you for the event.",
+  Taper: "Reducing volume while keeping intensity to arrive at the event fresh.",
+  Adapt: "Time-crunched plan's foundation phase. Builds capacity quickly with focused sessions.",
+};
+
+const ZONE_TIPS = {
+  Z1: "Very easy, used between hard efforts and on rest days.",
+  Z2: "Easy steady riding. The foundation of cycling fitness.",
+  Z3: "Moderate. Useful for sustained efforts and climbing rhythm.",
+  Z4: "Hard sustained effort. Builds the power you can hold for an hour.",
+  Z5: "Very hard. Builds maximum aerobic capacity.",
+  Z6: "All-out, short efforts. Builds sprint power.",
+};
+
+const WORKOUT_PLAIN = {
+  endurance:  "A steady, comfortable ride at a pace where you can hold a conversation. Builds your aerobic engine.",
+  long:       "Your long weekly ride. Mostly easy, conversational pace. Builds endurance and trains your body to use fat as fuel.",
+  tempo:      "Sustained moderate effort. Harder than easy, easier than threshold. Trains your muscles to clear fatigue.",
+  sweetSpot:  "Just below your threshold. A productive intensity for building fitness without too much fatigue.",
+  threshold:  "Hard sustained efforts at your one-hour limit. The classic session for raising your sustainable power.",
+  vo2max:     "Short, hard intervals near your maximum. Builds your aerobic ceiling so everything below feels easier.",
+  recovery:   "Very easy spinning to promote blood flow and recovery without adding fatigue.",
+  openers:    "Short, sharp efforts to wake up the legs without taxing them.",
+};
+
+function workoutPlainDesc(workout) {
+  let s = WORKOUT_PLAIN[workout.type] || "";
+  if (s && workout.hasClimbingFocus) {
+    s += " Find a hilly route or simulate by riding in a higher gear at low cadence.";
+  }
+  return s;
+}
+
+const GLOSSARY = [
+  {
+    title: "Power and Effort",
+    terms: [
+      ["FTP (Functional Threshold Power)", "The power you can sustain for about an hour. Most workout intensities are calculated as a percentage of this."],
+      ["TSS (Training Stress Score)",      "A score that combines workout duration and intensity into one number. Higher means more demanding."],
+      ["IF (Intensity Factor)",            "How hard the average effort is, as a fraction of FTP. 1.0 means right at threshold."],
+      ["W/kg",                              "Power-to-weight ratio. Cycling performance often comes down to this number, especially when climbing."],
+    ],
+  },
+  {
+    title: "Training Zones",
+    terms: [
+      ["Z1 Recovery",   "Very easy, below 55% FTP. Used between hard efforts."],
+      ["Z2 Endurance",  "Easy steady, 55-75% FTP. The foundation of fitness."],
+      ["Z3 Tempo",      "Moderate, 76-90% FTP. Useful for sustained efforts."],
+      ["Z4 Threshold",  "Hard, 91-105% FTP. Builds your one-hour power."],
+      ["Z5 VO2max",     "Very hard, 106-120% FTP. Builds aerobic ceiling."],
+      ["Z6 Anaerobic",  "All-out, above 120% FTP. Short, intense efforts."],
+    ],
+  },
+  {
+    title: "Workout Types",
+    terms: [
+      ["Endurance",   "Steady, easy-pace rides that build your aerobic engine."],
+      ["Long Ride",   "Your weekly long ride, mostly easy, builds endurance."],
+      ["Sweet Spot",  "Just below threshold, productive without too much fatigue."],
+      ["Threshold",   "Hard sustained efforts at your one-hour pace."],
+      ["VO2max",      "Short, hard intervals near your maximum capacity."],
+      ["Tempo",       "Moderate steady efforts between easy and hard."],
+    ],
+  },
+  {
+    title: "Plan Structure",
+    terms: [
+      ["Base",          "Aerobic foundation phase. Mostly easy with some moderate."],
+      ["Build",         "Intensity-focused phase. Adds threshold and harder work."],
+      ["Peak",          "Highest-load phase before the event. Race-specific work."],
+      ["Taper",         "Final phase. Volume drops, intensity stays, you arrive fresh."],
+      ["Recovery Week", "Every fourth week, volume drops 30% to allow adaptation."],
+    ],
+  },
+  {
+    title: "Other",
+    terms: [
+      ["RPE (Rate of Perceived Exertion)", "How hard the effort feels on a scale of 1 to 10. Useful when you don't have a power meter."],
+      ["Cadence",                          "How fast you spin the pedals, in revolutions per minute. Most efficient riders sit between 80 and 100 rpm."],
+    ],
+  },
+];
 
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
+const TOURS_KEY  = "ridePrep:tours";
 
 const DEFAULT_INPUTS = {
   eventSource: null,
   externalEvent: { type: null, distance: null, elevation: null, date: null },
+  // tourEvent is used when eventSource === "From Tour Planner". The selected
+  // tour is referenced by id; the date is required because saved tours don't
+  // carry a fixed event date.
+  tourEvent: { tourId: null, date: null },
   athlete: { height: null, weight: null, gender: null, fitnessMode: null, ftp: null, fitnessLevel: null },
   planOptions: { timeCrunched: false, weeklyHours: null },
 };
+
+// ── Tour Planner state location (per Step 0 audit) ──────────────────────────
+//
+// Tours are local React state in src/tour.jsx (a single object, not an array;
+// no name; no event date; no per-stage dates). They are not persisted by
+// default. The Tour Planner's "Save" button now writes a lightweight record
+// to localStorage under TOURS_KEY:
+//
+//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
+//
+// Training reads this list to populate the tour selector. The id is stable
+// per from+to pair so re-saving the same route updates the existing entry.
+function loadSavedTours() {
+  const arr = loadJSON(TOURS_KEY);
+  return Array.isArray(arr) ? arr : [];
+}
 
 function loadJSON(key) {
   try {
@@ -55,13 +175,24 @@ function NumField({ value, onChange, suffix, min, max }) {
 
 // ── Input cards ─────────────────────────────────────────────────────────────
 
-function EventSetupCard({ inputs, setInputs }) {
-  const { eventSource, externalEvent } = inputs;
+function EventSetupCard({ inputs, setInputs, savedTours }) {
+  const { eventSource, externalEvent, tourEvent } = inputs;
   const setSource = (v) => setInputs({ ...inputs, eventSource: v });
   const setEvent = (patch) =>
     setInputs({ ...inputs, externalEvent: { ...externalEvent, ...patch } });
+  const setTour = (patch) =>
+    setInputs({ ...inputs, tourEvent: { ...tourEvent, ...patch } });
 
   const today = new Date().toISOString().split("T")[0];
+
+  const selectedTour = tourEvent && tourEvent.tourId
+    ? savedTours.find((t) => t.id === tourEvent.tourId)
+    : null;
+  const tourDataIncomplete = selectedTour && (!selectedTour.totalKm || !selectedTour.totalAscent);
+
+  function goToTourPlanner() {
+    window.dispatchEvent(new CustomEvent("rideprep:switch-tab", { detail: "tour" }));
+  }
 
   return (
     <div className="card">
@@ -76,8 +207,73 @@ function EventSetupCard({ inputs, setInputs }) {
           onChange={setSource}
         />
 
-        {eventSource === "From Tour Planner" && (
-          <p className="plan-placeholder">Tour Planner integration coming soon</p>
+        {eventSource === "From Tour Planner" && savedTours.length === 0 && (
+          <div className="goal-row">
+            <p className="plan-placeholder">
+              No tours planned yet. Create a tour in the Tour Planner to use it here.
+            </p>
+            <button className="btn btn-ghost" onClick={goToTourPlanner}>
+              Open Tour Planner →
+            </button>
+          </div>
+        )}
+
+        {eventSource === "From Tour Planner" && savedTours.length > 0 && (
+          <>
+            <div className="goal-row">
+              <label>Tour</label>
+              <select
+                className="plan-select"
+                value={tourEvent.tourId || ""}
+                onChange={(e) => setTour({ tourId: e.target.value || null })}
+              >
+                <option value="">Select a tour…</option>
+                {savedTours.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {selectedTour && (
+              <div className="tour-summary-card">
+                <div className="tour-summary-name">{selectedTour.name}</div>
+                <div className="tour-summary-stats">
+                  <span>{selectedTour.totalKm} km</span>
+                  <span>↑ {selectedTour.totalAscent} m</span>
+                  {selectedTour.stageCount > 1 && (
+                    <span>{selectedTour.stageCount} stages</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tourDataIncomplete && (
+              <div className="gen-error">
+                Selected tour has incomplete data, please update it in the Tour Planner.
+              </div>
+            )}
+
+            {selectedTour && !tourDataIncomplete && (
+              <div className="goal-row">
+                <label>Event Date</label>
+                <div className="num-input date-input">
+                  <input
+                    type="date"
+                    min={today}
+                    value={tourEvent.date ?? ""}
+                    onChange={(e) => setTour({ date: e.target.value || null })}
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {eventSource === "From Tour Planner" && savedTours.length > 0 && tourEvent.tourId && !selectedTour && (
+          // Selected tour was deleted from storage — surface and offer recovery.
+          <div className="gen-error">
+            The previously selected tour is no longer available. Pick another tour above.
+          </div>
         )}
 
         {eventSource === "External Event" && (
@@ -210,16 +406,19 @@ function PlanOptionsCard({ inputs, setInputs }) {
           <span>I have less than 8 hours per week to train</span>
         </label>
         {planOptions.timeCrunched && (
-          <div className="goal-row">
-            <label>Weekly hours available</label>
-            <NumField
-              value={planOptions.weeklyHours}
-              onChange={(v) => setOpts({ weeklyHours: v })}
-              suffix="hrs / wk"
-              min={3}
-              max={7}
-            />
-          </div>
+          <>
+            <p className="tc-note">Time-crunched plan active — workouts optimised for ≤8 hrs/wk.</p>
+            <div className="goal-row">
+              <label>Weekly hours available</label>
+              <NumField
+                value={planOptions.weeklyHours}
+                onChange={(v) => setOpts({ weeklyHours: v })}
+                suffix="hrs / wk"
+                min={3}
+                max={7}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -228,12 +427,18 @@ function PlanOptionsCard({ inputs, setInputs }) {
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
-function isValid(inputs) {
-  const { eventSource, externalEvent, athlete, planOptions } = inputs;
+function isValid(inputs, savedTours = []) {
+  const { eventSource, externalEvent, tourEvent, athlete, planOptions } = inputs;
   if (!eventSource) return false;
   if (eventSource === "External Event") {
     if (!externalEvent.type || !externalEvent.distance || !externalEvent.elevation || !externalEvent.date)
       return false;
+  }
+  if (eventSource === "From Tour Planner") {
+    if (!tourEvent || !tourEvent.tourId || !tourEvent.date) return false;
+    const tour = savedTours.find((t) => t.id === tourEvent.tourId);
+    if (!tour) return false;                         // tour was deleted
+    if (!tour.totalKm || !tour.totalAscent) return false; // incomplete tour data
   }
   if (!athlete.height || !athlete.weight || !athlete.gender || !athlete.fitnessMode) return false;
   if (athlete.fitnessMode === "FTP" && !athlete.ftp) return false;
@@ -243,6 +448,22 @@ function isValid(inputs) {
     if (!h || h < 3 || h > 7) return false;
   }
   return true;
+}
+
+// Detect tour drift: same tourId selected, but its km/ascent changed since
+// the plan was generated. Inputs-snapshot comparison alone misses this
+// because tourId is unchanged.
+function isTourStale(plan, planInputs, savedTours) {
+  if (!plan || !plan.tourDataSnapshot) return false;
+  if (planInputs.eventSource !== "From Tour Planner") return false;
+  const tourId = planInputs.tourEvent && planInputs.tourEvent.tourId;
+  if (!tourId) return false;
+  const tour = savedTours.find((t) => t.id === tourId);
+  if (!tour) return false;
+  return (
+    tour.totalKm !== plan.tourDataSnapshot.totalKm ||
+    tour.totalAscent !== plan.tourDataSnapshot.totalAscent
+  );
 }
 
 // ── Plan helpers ────────────────────────────────────────────────────────────
@@ -315,16 +536,24 @@ function EmptyPlanState() {
 
 // ── Right-panel: plan summary, phases, volume bars ──────────────────────────
 
-function PlanHero({ plan, selectedWeek, onSelectWeek }) {
+function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
   const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
-  const pathwayLabel = meta.pathway === "timeCrunched" ? "Time-crunched" : "Default";
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
+  const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
+  const tssNote = "TSS measures the stress of a week's training. Higher means harder.";
 
   return (
     <div className="plan-hero">
+      <button
+        className="glossary-trigger"
+        onClick={onOpenGlossary}
+        aria-label="Open glossary"
+        title="Glossary of cycling training terms"
+      >?</button>
+
       <div className="plan-meta">
         <div>
           <span className="label">Plan</span>
@@ -335,14 +564,19 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
           <span className="val">{focus}</span>
         </div>
         <div>
-          <span className="label">Total volume</span>
+          <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
           <span className="val">{Math.round(totalHours)} hrs</span>
         </div>
         <div>
-          <span className="label">Peak week</span>
+          <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
           <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
-        <div className="pathway-badge">{pathwayLabel}</div>
+        {tierLabel && (
+          <div>
+            <Tooltip content={TIP.climbing} side="bottom"><span className="label tip-trigger">Climbing</span></Tooltip>
+            <span className="val">{tierLabel} · {meta.climbingDensity} m/km</span>
+          </div>
+        )}
       </div>
 
       <div className="phase-strip">
@@ -359,7 +593,9 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
                 width: `${w}%`,
                 "--phase-color": PHASE_COLOR_VAR[p.name] || "var(--accent)",
               }}
-              title={`${p.name} · ${p.tid}`}
+              title={PHASE_TIPS[p.name]
+                ? `${p.name}: ${PHASE_TIPS[p.name]}`
+                : `${p.name} · ${p.tid}`}
             >
               <span className="phase-name">{p.name}</span>
               <span className="phase-range">{range}</span>
@@ -381,9 +617,15 @@ function PlanHero({ plan, selectedWeek, onSelectWeek }) {
               style={{ height: `${(w.totalTSS / maxTSS) * 100}%` }}
               onClick={() => onSelectWeek(w.number)}
               aria-pressed={w.number === selectedWeek}
-              title={`Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs`}
+              title={w.isRecoveryWeek
+                ? `Wk ${w.number} · Recovery week. Volume drops 30% to allow adaptation. ${tssNote}`
+                : `Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs. ${tssNote}`}
             >
+              {w.isRecoveryWeek && (
+                <span className="vol-bar-rest-icon" aria-hidden="true">↺</span>
+              )}
               <span className="vol-bar-label">Wk {w.number}</span>
+              {w.isRecoveryWeek && <span className="vol-bar-recovery">Recovery</span>}
             </button>
           ))}
         </div>
@@ -460,6 +702,9 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
                 <span className="day-date">{dateLabel}</span>
               </div>
               <div className="day-type">{w.name}</div>
+              {w.hasClimbingFocus && (
+                <div className="climbing-tag">↑ {w.targetElevation} m target</div>
+              )}
               <div className="day-metric">{w.distanceKm} km · TSS {w.tss}</div>
               <div className="zone-strip">
                 {segs.map((zone) => (
@@ -483,7 +728,7 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
 
 // ── Right-panel: workout detail for the selected day ────────────────────────
 
-function WorkoutDetail({ week, dayIndex }) {
+function WorkoutDetail({ week, dayIndex, fitnessMode }) {
   const day = week && dayIndex != null ? week.days[dayIndex] : null;
   const workout = day && day.workout ? day.workout : null;
 
@@ -515,6 +760,8 @@ function WorkoutDetail({ week, dayIndex }) {
   const hours = workout.durationMin / 60;
   const ifv = hours > 0 ? Math.sqrt(workout.tss / (hours * 100)) : 0;
 
+  const plain = workoutPlainDesc(workout);
+
   return (
     <div className="card workout-detail">
       <div className="workout-header">
@@ -522,13 +769,26 @@ function WorkoutDetail({ week, dayIndex }) {
           <h3>{workout.name}</h3>
           <div className="workout-meta">
             <span>{fmtDuration(workout.durationMin)}</span>
-            <span>TSS {workout.tss}</span>
-            <span>IF {ifv.toFixed(2)}</span>
+            <Tooltip content={TIP.tss}><span className="tip-trigger">TSS {workout.tss}</span></Tooltip>
+            <Tooltip content={TIP.if}><span className="tip-trigger">IF {ifv.toFixed(2)}</span></Tooltip>
             <span>{workout.type}</span>
           </div>
         </div>
-        <button className="btn btn-primary">Start</button>
       </div>
+
+      {plain && (
+        <div className="workout-plain">
+          <b>What this means</b>
+          {plain}
+        </div>
+      )}
+
+      {workout.hasClimbingFocus && (
+        <div className="climbing-note">
+          This ride has an elevation target. Seek hilly terrain or a sustained climb —
+          or simulate by riding in a higher gear at steady effort.
+        </div>
+      )}
 
       <div className="interval-viz">
         {viz.map((b, i) => (
@@ -548,17 +808,23 @@ function WorkoutDetail({ week, dayIndex }) {
             </span>
             <div>
               <div className="interval-label">{iv.label}</div>
-              <div className="interval-detail">{ZONES_LABEL[iv.zone] || ""}</div>
+              <div className="interval-detail">{zoneDetail(iv.zone, fitnessMode)}</div>
             </div>
             <span className="interval-duration">{fmtDuration(iv.durationMin)}</span>
           </div>
         ))}
       </div>
+
+      {workoutNutritionNote(workout) && (
+        <div className="nutr-note">
+          {workoutNutritionNote(workout)}
+        </div>
+      )}
     </div>
   );
 }
 
-const ZONES_LABEL = {
+const ZONES_LABEL_FTP = {
   Z1: "Active Recovery · <55% FTP",
   Z2: "Endurance · 55-75% FTP",
   Z3: "Tempo · 76-90% FTP",
@@ -567,26 +833,379 @@ const ZONES_LABEL = {
   Z6: "Anaerobic · >120% FTP",
 };
 
-// ── Zones reference card (unchanged) ────────────────────────────────────────
+const ZONES_FEEL = {
+  Z1: "Active Recovery · Very easy, fully relaxed",
+  Z2: "Endurance · Easy, conversational pace",
+  Z3: "Tempo · Moderate, breathing harder",
+  Z4: "Threshold · Hard, short sentences only",
+  Z5: "VO2max · Very hard, heavy breathing",
+  Z6: "Anaerobic · All-out, unsustainable",
+};
 
-function ZonesCard() {
+function zoneDetail(zoneId, fitnessMode) {
+  return fitnessMode === "Fitness Level"
+    ? (ZONES_FEEL[zoneId] || "")
+    : (ZONES_LABEL_FTP[zoneId] || "");
+}
+
+// ── Nutrition tips data ──────────────────────────────────────────────────────
+
+const _prepBaseTips = [
+  "Carbohydrates are your main fuel on training days. Aim for 5-7 g per kg body weight.",
+  "Protein supports adaptation. Aim for 1.4-1.7 g per kg body weight per day, spread across meals.",
+  "Healthy fats matter for hormones. Avocado, nuts, oily fish.",
+  "For rides over 90 minutes, practice eating on the bike.",
+  "Match calorie intake to training load on bigger weeks.",
+];
+
+const NUTRITION_TIPS_DATA = {
+  Prep:      _prepBaseTips,
+  Base:      _prepBaseTips,
+  Adapt:     _prepBaseTips,
+  Build: [
+    "Keep carb intake high. Whole grains, fruit, vegetables, potatoes.",
+    "Time carb-rich meals around your harder sessions.",
+    "Hold protein at 1.4-1.7 g per kg, 20-30 g per meal.",
+    "Start practicing race-day fueling: 60-90 g carbs per hour on long rides.",
+    "Don't try new foods on intensity days.",
+  ],
+  Peak: [
+    "Maintain energy stores. This is not the time to restrict calories.",
+    "Practice your planned race-day breakfast on weekend long rides.",
+    "Hydrate consistently. Add electrolytes on longer or hot rides.",
+    "Avoid new supplements or major dietary changes.",
+  ],
+  Taper: [
+    "Slightly reduce calories as training volume drops, but keep carbs high.",
+    "Stay well hydrated in the days before the event.",
+    "Get plenty of sleep. It now matters more than any food choice.",
+    "Stick to familiar foods. No experiments.",
+  ],
+  "Race Day": [
+    "Eat your usual breakfast 3 hours before the start.",
+    "Top up with 30-60 g carbs in the hour before.",
+    "During the event, aim for 60-90 g carbs per hour and 500-750 ml fluid.",
+    "Use familiar gels, bars, or drinks. Nothing new on race day.",
+    "Within 30 minutes after: roughly 20 g protein and 60 g carbs.",
+  ],
+  General: [
+    "Hydrate consistently. Light yellow urine is a good daily marker.",
+    "Don't undereat. Training raises your calorie needs.",
+    "Recovery happens when you rest. Sleep is part of fueling.",
+    "Whole foods first. Supplements only fill specific gaps.",
+  ],
+};
+
+function workoutNutritionNote(workout) {
+  if (!workout) return null;
+  const { type, hasClimbingFocus } = workout;
+  if (hasClimbingFocus) {
+    return "Higher elevation means higher effort. Aim for the upper end of fueling ranges, around 80-90 g carbs per hour.";
+  }
+  if (type === "long") {
+    return "Fuel before, during, and after. Aim for 60-90 g carbs per hour and 500-750 ml fluid per hour. Refuel within 30 minutes of finishing.";
+  }
+  if (type === "threshold" || type === "sweetSpot" || type === "vo2max" || type === "tempo") {
+    return "A carb-rich snack 30-60 minutes before helps. No fueling needed during workouts under 90 minutes.";
+  }
+  if (type === "endurance") {
+    return "Eat normally before. For rides over 90 minutes, take 30-60 g carbs per hour.";
+  }
+  if (type === "recovery") {
+    return "Easy session. No special fueling needed. Listen to hunger.";
+  }
+  return null;
+}
+
+// ── Zones reference card ────────────────────────────────────────────────────
+
+function ZonesCard({ fitnessMode }) {
+  const isFeel = fitnessMode === "Fitness Level";
   return (
     <div className="card">
       <div className="card-title">
         <h2>Zones</h2>
-        <span className="sub">Power-based</span>
+        <span className="sub">{isFeel ? "Feel-based" : "Power-based"}</span>
       </div>
       <div className="zones">
         {window.RP_DATA.ZONES.map((z) => (
           <div key={z.id} className="zone-row">
             <span className="zone-swatch" style={{ background: z.color }} />
-            <span>{z.id} · {z.name}</span>
-            <span className="zone-range">{z.range}</span>
+            <Tooltip content={ZONE_TIPS[z.id]}>
+              <span className="tip-trigger">{z.id} · {z.name}</span>
+            </Tooltip>
+            <span className="zone-range">
+              {isFeel ? ZONES_FEEL[z.id].split(" · ")[1] : z.range}
+            </span>
           </div>
         ))}
       </div>
     </div>
   );
+}
+
+// ── Glossary modal ──────────────────────────────────────────────────────────
+
+function GlossaryModal({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    // Lock background scroll while open.
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h2>Glossary</h2>
+            <p className="modal-sub">Key terms used in your training plan</p>
+          </div>
+          <button className="modal-close" onClick={onClose} aria-label="Close glossary">×</button>
+        </div>
+        <div className="modal-body">
+          {GLOSSARY.map((section) => (
+            <section key={section.title} className="gloss-section">
+              <h3>{section.title}</h3>
+              <dl>
+                {section.terms.map(([name, def]) => (
+                  <div key={name} className="gloss-row">
+                    <dt>{name}</dt>
+                    <dd>{def}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Nutrition tips card ──────────────────────────────────────────────────────
+
+function NutritionTips({ plan, currentWeekPhase }) {
+  const phaseTabs = plan.phases.map((p) => p.name);
+  const allTabs = [...phaseTabs, "Race Day", "General"];
+  const defaultTab = phaseTabs.includes(currentWeekPhase) ? currentWeekPhase : phaseTabs[0];
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
+  const tips = NUTRITION_TIPS_DATA[activeTab] || NUTRITION_TIPS_DATA["General"];
+
+  return (
+    <div className="card">
+      <div className="card-title">
+        <h2>Nutrition tips</h2>
+        <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
+      </div>
+      <div className="nutr-tabs">
+        {allTabs.map((tab) => (
+          <button
+            key={tab}
+            className={"nutr-tab" + (tab === activeTab ? " active" : "")}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      <ul className="nutr-tips">
+        {tips.map((tip, i) => (
+          <li key={i}>{tip}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── Print / PDF export ───────────────────────────────────────────────────────
+
+const PRINT_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function formatPrintDate(isoStr) {
+  if (!isoStr) return "";
+  const [y, m, d] = isoStr.split("-").map(Number);
+  if (!y || !m || !d) return isoStr;
+  return `${d} ${PRINT_MONTHS[m - 1]} ${y}`;
+}
+
+function buildPlanFilename(plan) {
+  const distance = Math.round(plan.meta.eventDistance);
+  const eventType = String(plan.meta.eventType || "plan").replace(/\s+/g, "-");
+  const date = plan.meta.eventDate;
+  return `RidePrep-Plan-${distance}km-${eventType}-${date}`;
+}
+
+function intervalSummaryLine(workout) {
+  return workout.intervals
+    .map((iv) => `${iv.label} ${iv.zone} ${iv.durationMin}m`)
+    .join(" · ");
+}
+
+// PrintView renders into document.body via a portal so a single CSS rule —
+// `body > *:not(.print-view) { display: none }` in @media print — can hide
+// the rest of the app cleanly without caring where Training lives.
+function PrintView({ plan, planInputs }) {
+  if (!plan) return null;
+  const { meta, phases, weeks } = plan;
+  const eventLabel = EVENT_LABEL[meta.eventType] || meta.eventType;
+  const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
+  const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
+  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const generatedStr = formatPrintDate(new Date().toISOString().split("T")[0]);
+  const phaseLine = phases
+    .map((p) => p.startWeek === p.endWeek
+      ? `${p.name}: Wk ${p.startWeek}`
+      : `${p.name}: Wk ${p.startWeek}-${p.endWeek}`)
+    .join(" · ");
+
+  const athlete = (planInputs && planInputs.athlete) || {};
+
+  // Dedupe nutrition sections by tips-array identity so aliased phases
+  // (Prep/Base/Adapt all share one tip set) don't print three identical
+  // blocks. Order: phases in plan, then Race Day, then General.
+  const nutritionSections = [];
+  const seenTips = new Set();
+  for (const phaseName of [...phases.map((p) => p.name), "Race Day", "General"]) {
+    const tips = NUTRITION_TIPS_DATA[phaseName];
+    if (!tips || seenTips.has(tips)) continue;
+    seenTips.add(tips);
+    nutritionSections.push({ phaseName, tips });
+  }
+
+  const tree = (
+    <div className="print-view">
+      <section className="print-cover">
+        <div className="print-logo">Ride Prep</div>
+        <h1 className="print-title">Ride Prep Training Plan</h1>
+        <p className="print-event-line">
+          {eventLabel} · {meta.eventDistance} km · {meta.eventElevation} m · {formatPrintDate(meta.eventDate)}
+        </p>
+        <p className="print-generated">Generated {generatedStr}</p>
+      </section>
+
+      <section className="print-section">
+        <h2>Athlete Profile</h2>
+        <dl className="print-kv">
+          {athlete.height != null && (<><dt>Height</dt><dd>{athlete.height} cm</dd></>)}
+          {athlete.weight != null && (<><dt>Weight</dt><dd>{athlete.weight} kg</dd></>)}
+          {athlete.gender && (<><dt>Gender</dt><dd>{athlete.gender}</dd></>)}
+          {athlete.fitnessMode === "FTP" && athlete.ftp && (
+            <><dt>FTP (entered)</dt><dd>{athlete.ftp} W</dd></>
+          )}
+          {athlete.fitnessMode === "Fitness Level" && athlete.fitnessLevel && (
+            <><dt>Fitness Level</dt><dd>{athlete.fitnessLevel}</dd></>
+          )}
+          <dt>Estimated FTP</dt><dd>{meta.estimatedFTP} W</dd>
+          <dt>Weekly hours target</dt><dd>{meta.weeklyHoursTarget} hrs</dd>
+        </dl>
+      </section>
+
+      <section className="print-section">
+        <h2>Plan Overview</h2>
+        <dl className="print-kv">
+          <dt>Total weeks</dt><dd>{meta.weeksUntilEvent}</dd>
+          <dt>Total volume</dt><dd>{Math.round(totalHours)} hrs</dd>
+          <dt>Peak week</dt>
+          <dd>Wk {peak.number} · {peak.totalHours} hrs · TSS {peak.totalTSS}</dd>
+          {tierLabel && (<><dt>Climbing</dt><dd>{tierLabel} · {meta.climbingDensity} m/km</dd></>)}
+          <dt>Phases</dt><dd>{phaseLine}</dd>
+          {meta.pathway === "timeCrunched" && (
+            <><dt>Note</dt><dd>Time-crunched plan, optimised for ≤8 hours per week.</dd></>
+          )}
+        </dl>
+      </section>
+
+      <section className="print-schedule">
+        <h2>Weekly Schedule</h2>
+        {weeks.map((w) => (
+          <div key={w.number} className="print-week">
+            <h3>
+              Week {w.number} · {w.phase}
+              {w.isRecoveryWeek && " · Recovery"}
+              {" · "}{w.totalHours} hrs · TSS {w.totalTSS}
+            </h3>
+            <table className="print-day-table">
+              <tbody>
+                {w.days.map((d, i) => {
+                  const date = dateForWeekDay(w.number, i);
+                  const dateLabel = fmtDate(date);
+                  if (!d.workout) {
+                    return (
+                      <tr key={i}>
+                        <td className="print-day-name">{d.day} {dateLabel}</td>
+                        <td className="print-day-rest" colSpan={2}>Rest</td>
+                      </tr>
+                    );
+                  }
+                  const wo = d.workout;
+                  return (
+                    <tr key={i}>
+                      <td className="print-day-name">{d.day} {dateLabel}</td>
+                      <td className="print-day-workout"><strong>{wo.name}</strong></td>
+                      <td className="print-day-metrics">
+                        {wo.durationMin} min · {wo.distanceKm} km · TSS {wo.tss}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {w.days.some((d) => d.workout) && (
+              <ul className="print-intervals">
+                {w.days.filter((d) => d.workout).map((d, i) => (
+                  <li key={i}>
+                    <strong>{d.workout.name}:</strong>{" "}
+                    {intervalSummaryLine(d.workout)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </section>
+
+      <section className="print-appendix">
+        <h2>Nutrition Tips</h2>
+        <p className="print-sub">Guidance, not a meal plan. Adjust to your body and preferences.</p>
+        {nutritionSections.map(({ phaseName, tips }) => (
+          <div key={phaseName} className="print-nutr">
+            <h3>{phaseName}</h3>
+            <ul>{tips.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          </div>
+        ))}
+      </section>
+
+      <section className="print-appendix">
+        <h2>Glossary</h2>
+        {GLOSSARY.map((section) => (
+          <div key={section.title} className="print-gloss">
+            <h3>{section.title}</h3>
+            <dl>
+              {section.terms.map(([name, def]) => (
+                <React.Fragment key={name}>
+                  <dt>{name}</dt>
+                  <dd>{def}</dd>
+                </React.Fragment>
+              ))}
+            </dl>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+
+  return ReactDOM.createPortal(tree, document.body);
 }
 
 // ── Root view ────────────────────────────────────────────────────────────────
@@ -598,8 +1217,15 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     const saved = loadJSON(INPUTS_KEY);
     return saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
   });
+  // Loaded once on mount. Training is conditionally rendered in app.jsx, so
+  // it remounts on every tab switch — that re-reads localStorage and picks up
+  // tours saved while the user was on the Tour Planner tab.
+  const [savedTours] = useState(loadSavedTours);
   const [generatedPlan, setGeneratedPlan] = useState(initialPlan);
   const [generationError, setGenerationError] = useState(null);
+  // null | "created" | "updated" — drives the transient post-generate banner.
+  const [confirmationState, setConfirmationState] = useState(null);
+  const [showGlossary, setShowGlossary] = useState(false);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(() =>
     initialPlan ? firstNonRestDay(initialPlan.weeks[0]) : null
@@ -608,7 +1234,25 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   // Persist inputs.
   useEffect(() => {
     try { window.localStorage.setItem(INPUTS_KEY, JSON.stringify(planInputs)); } catch {}
+    window.dispatchEvent(new CustomEvent("rideprep:inputs-changed", { detail: planInputs }));
   }, [planInputs]);
+
+  // Auto-dismiss the confirmation banner. A ref-managed timer ensures that
+  // clicking Generate again before timeout resets the countdown even when
+  // the new state value equals the previous one (React skips same-value
+  // updates, so a useEffect on confirmationState alone wouldn't re-fire).
+  const confirmTimerRef = useRef(null);
+  function showConfirmation(kind) {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmationState(kind);
+    confirmTimerRef.current = setTimeout(() => {
+      setConfirmationState(null);
+      confirmTimerRef.current = null;
+    }, 3500);
+  }
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+  }, []);
 
   // Persist plan.
   useEffect(() => {
@@ -621,21 +1265,52 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     } catch {}
   }, [generatedPlan]);
 
-  const canGenerate = isValid(planInputs);
+  const canGenerate = isValid(planInputs, savedTours);
   const isStale =
-    generatedPlan &&
-    JSON.stringify(planInputs) !== JSON.stringify(generatedPlan.inputsSnapshot);
+    generatedPlan && (
+      JSON.stringify(planInputs) !== JSON.stringify(generatedPlan.inputsSnapshot)
+      || isTourStale(generatedPlan, planInputs, savedTours)
+    );
 
   function handleGenerate() {
     setGenerationError(null);
     if (!canGenerate) return;
+
+    // Build the inputs the generator actually consumes. Tour-sourced events
+    // are translated into a synthetic "External Event" with type=Long Tour
+    // and tour totals, so the generator stays unaware of tours.
+    let generatorInputs = planInputs;
+    let tourSnapshot = null;
+    if (planInputs.eventSource === "From Tour Planner") {
+      const tour = savedTours.find((t) => t.id === planInputs.tourEvent.tourId);
+      if (!tour) {
+        setGenerationError("Selected tour is no longer available. Pick another tour.");
+        return;
+      }
+      tourSnapshot = { totalKm: tour.totalKm, totalAscent: tour.totalAscent };
+      generatorInputs = {
+        ...planInputs,
+        eventSource: "External Event",
+        externalEvent: {
+          type: "Long Tour",
+          distance: tour.totalKm,
+          elevation: tour.totalAscent,
+          date: planInputs.tourEvent.date,
+        },
+      };
+    }
+
     try {
-      const plan = window.RP_PlanGenerator.generatePlan(planInputs);
-      // Snapshot the inputs so we can detect drift later.
+      const plan = window.RP_PlanGenerator.generatePlan(generatorInputs);
+      // Snapshot the *original* user inputs so the stale-banner reflects
+      // what the user controls in the UI, not the synthesized form.
       plan.inputsSnapshot = JSON.parse(JSON.stringify(planInputs));
+      if (tourSnapshot) plan.tourDataSnapshot = tourSnapshot;
+      const isFirstPlan = !generatedPlan;
       setGeneratedPlan(plan);
       setSelectedWeek(1);
       setSelectedDay(firstNonRestDay(plan.weeks[0]));
+      showConfirmation(isFirstPlan ? "created" : "updated");
     } catch (e) {
       setGenerationError(e && e.message ? e.message : "Plan generation failed");
     }
@@ -648,16 +1323,39 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     }
   }
 
+  function handleDownloadPdf() {
+    if (!generatedPlan) return;
+    const original = document.title;
+    document.title = buildPlanFilename(generatedPlan);
+    const restore = () => {
+      document.title = original;
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    window.print();
+  }
+
   const currentWeek = generatedPlan ? generatedPlan.weeks[selectedWeek - 1] : null;
 
   return (
     <div className="training-layout fade-in">
       <div className="stack">
-        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} />
+        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} savedTours={savedTours} />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
 
-        {isStale && (
+        {confirmationState && (
+          <div className="confirm-banner">
+            <span className="confirm-check" aria-hidden="true">✓</span>
+            <span>
+              {confirmationState === "created"
+                ? "Plan created"
+                : "Plan updated to match your inputs"}
+            </span>
+          </div>
+        )}
+
+        {isStale && !confirmationState && (
           <div className="stale-banner">
             Inputs changed. Click Generate Plan to update.
           </div>
@@ -676,8 +1374,10 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
           <div className="gen-error">{generationError}</div>
         )}
 
-        <ZonesCard />
+        <ZonesCard fitnessMode={planInputs.athlete.fitnessMode} />
       </div>
+
+      {showGlossary && <GlossaryModal onClose={() => setShowGlossary(false)} />}
 
       <div className="stack" style={{ gap: 20 }}>
         {!generatedPlan ? (
@@ -688,6 +1388,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               plan={generatedPlan}
               selectedWeek={selectedWeek}
               onSelectWeek={handleSelectWeek}
+              onOpenGlossary={() => setShowGlossary(true)}
             />
             <WeekTabs
               weeks={generatedPlan.weeks}
@@ -699,7 +1400,22 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               selectedDay={selectedDay}
               onSelectDay={setSelectedDay}
             />
-            <WorkoutDetail week={currentWeek} dayIndex={selectedDay} />
+            <WorkoutDetail
+              week={currentWeek}
+              dayIndex={selectedDay}
+              fitnessMode={planInputs.athlete.fitnessMode}
+            />
+            <NutritionTips
+              plan={generatedPlan}
+              currentWeekPhase={currentWeek && currentWeek.phase}
+            />
+            <button
+              className="btn btn-ghost download-pdf-btn"
+              onClick={handleDownloadPdf}
+            >
+              <span aria-hidden="true">⬇</span> Download as PDF
+            </button>
+            <PrintView plan={generatedPlan} planInputs={planInputs} />
           </>
         )}
       </div>

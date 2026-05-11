@@ -1,7 +1,23 @@
 /* global window, React, L */
 // Tour planner: form + Leaflet map with OpenRouteService routing.
 (() => {
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ---------- Full-state persistence ----------
+//
+// Auto-persist the full Tour Planner state (stops, route, settings, geometry)
+// to localStorage on every change, so switching tabs or reloading the page
+// returns the user to their last route. The lightweight "ridePrep:tours"
+// record is kept in sync as a side effect so Training sees current data
+// without requiring an explicit Save click.
+const TOUR_STATE_KEY = "ridePrep:tourState";
+
+function loadFullTourState() {
+  try {
+    const raw = window.localStorage.getItem(TOUR_STATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
 
 // ---------- ORS API helpers ----------
 const ORS_BASE = "https://api.openrouteservice.org";
@@ -341,7 +357,7 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, loading, error }) {
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, onSave, saveFeedback, loading, error }) {
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -451,8 +467,12 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         <button className="btn btn-primary" onClick={onPlan} disabled={loading} style={{ flex: 1, opacity: loading ? 0.7 : 1 }}>
           {loading ? "Planning…" : "Plan route"}
         </button>
-        <button className="btn btn-ghost">Save</button>
+        <button className="btn btn-ghost" onClick={onSave}>Save</button>
       </div>
+
+      {saveFeedback && (
+        <div className="save-feedback">{saveFeedback}</div>
+      )}
 
       {error && (
         <div style={{
@@ -556,11 +576,54 @@ function SummaryBar({ tour, units }) {
   );
 }
 
+// ---------- localStorage persistence ----------
+//
+// Tour Planner state is local to this component and not shared. The "Save"
+// button writes a lightweight record (no geometry) to ridePrep:tours so the
+// Training page can read available tours without depending on component state.
+//
+// Saved record shape:
+//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
+//
+// Tours are identified by from+to — saving the same route overwrites the
+// previous entry with the same stable id, keeping Training's tourId reference
+// valid across re-saves.
+function saveTourToStorage(tour) {
+  try {
+    const raw = window.localStorage.getItem("ridePrep:tours");
+    const list = raw ? JSON.parse(raw) : [];
+    const existingIdx = list.findIndex((t) => t.from === tour.from && t.to === tour.to);
+    const entry = {
+      id: existingIdx >= 0 ? list[existingIdx].id : `tour_${Date.now()}`,
+      name: `${tour.from} → ${tour.to}`,
+      from: tour.from,
+      to: tour.to,
+      totalKm: tour.totalKm || 0,
+      totalAscent: tour.totalAscent || 0,
+      stageCount: (tour.stages || []).length,
+      savedAt: Date.now(),
+    };
+    if (existingIdx >= 0) list[existingIdx] = entry;
+    else list.push(entry);
+    window.localStorage.setItem("ridePrep:tours", JSON.stringify(list));
+    return entry.id;
+  } catch { return null; }
+}
+
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
-  const [stops, setStops] = useState(["Munich, DE", "Innsbruck, AT"]);
-  const [dailyKm, setDailyKm] = useState(60);
-  const [budget, setBudget] = useState("mid");
+  // Load any previously-persisted state once on mount. Subsequent renders
+  // reuse the same object via useMemo so the lazy useState initialisers
+  // below all see the same snapshot.
+  const saved = useMemo(() => loadFullTourState(), []);
+  const { DEMO_TOUR: _DT } = window.RP_DATA;
+  const defaultStops = [_DT.from, _DT.to];
+
+  const [stops, setStops] = useState(() =>
+    (saved && Array.isArray(saved.stops) && saved.stops.length >= 2) ? saved.stops : defaultStops
+  );
+  const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
+  const [budget, setBudget] = useState(() => (saved && saved.budget) || "mid");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
@@ -606,8 +669,30 @@ function Tour({ tweaks }) {
     };
   }, [DEMO_TOUR]);
 
-  const [tour, setTour] = useState(initialDemo);
-  const [geometry, setGeometry] = useState(initialDemo()._geom);
+  const [tour, setTour] = useState(() => (saved && saved.tour) || initialDemo());
+  const [geometry, setGeometry] = useState(() => (saved && saved.geometry) || initialDemo()._geom);
+  const [saveFeedback, setSaveFeedback] = useState(null);
+
+  // Auto-persist the full state on any change so tab switches and reloads
+  // restore the user's tour. Also write the lightweight ridePrep:tours record
+  // so Training picks up edits without an explicit Save click.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        TOUR_STATE_KEY,
+        JSON.stringify({ tour, geometry, stops, dailyKm, budget })
+      );
+    } catch {}
+    if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
+      saveTourToStorage(tour);
+    }
+  }, [tour, geometry, stops, dailyKm, budget]);
+
+  const handleSave = useCallback(() => {
+    const id = saveTourToStorage(tour);
+    setSaveFeedback(id ? "Tour saved!" : "Save failed");
+    setTimeout(() => setSaveFeedback(null), 2500);
+  }, [tour]);
 
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
@@ -674,6 +759,8 @@ function Tour({ tweaks }) {
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             budget={budget} setBudget={setBudget}
             onPlan={planRoute}
+            onSave={handleSave}
+            saveFeedback={saveFeedback}
             loading={loading}
             error={error}
           />
