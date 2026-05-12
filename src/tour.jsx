@@ -1042,6 +1042,19 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
               <div className="stage-actions">
                 <button
                   type="button"
+                  className="btn btn-ghost stage-day-btn"
+                  disabled={!hasStageGeometry}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasStageGeometry) return;
+                    onOpenDay({ stageIdx: i });
+                  }}
+                  title={hasStageGeometry ? "" : "Route geometry not available for this stage"}
+                >
+                  Find out more about your tour day
+                </button>
+                <button
+                  type="button"
                   className="btn btn-ghost stage-dest-btn"
                   disabled={!hasCoord}
                   onClick={(e) => {
@@ -1056,19 +1069,6 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
                   title={hasCoord ? "" : "Coordinates not available for this stage"}
                 >
                   Find out more about your destination
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost stage-day-btn"
-                  disabled={!hasStageGeometry}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!hasStageGeometry) return;
-                    onOpenDay({ stageIdx: i });
-                  }}
-                  title={hasStageGeometry ? "" : "Route geometry not available for this stage"}
-                >
-                  Find out more about your tour day
                 </button>
               </div>
             </div>
