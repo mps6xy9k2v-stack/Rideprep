@@ -505,6 +505,43 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
   );
 }
 
+// Shared modal shell. Three responsibilities:
+//   1) Portal into document.body so position:fixed isn't trapped by an
+//      ancestor's transform/filter/perspective (e.g. .fade-in's keyframes).
+//   2) Body scroll-lock + Esc-to-close + autofocus close button.
+//   3) Standard head/body grid so children only render their content.
+function Modal({ title, subtitle, onClose, ariaLabel, children }) {
+  const closeBtnRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeBtnRef.current && closeBtnRef.current.focus();
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return ReactDOM.createPortal(
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label={ariaLabel || title}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h2>{title}</h2>
+            {subtitle && <p className="modal-sub">{subtitle}</p>}
+          </div>
+          <button ref={closeBtnRef} className="modal-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+        <div className="modal-body">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ---------- Destination detail modal ----------
 //
 // Lazy-loads hotels and restaurants within `radiusM` of (lat, lng) via
@@ -516,21 +553,6 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
   const [radiusM, setRadiusM] = useState(5000);
   const [retryNonce, setRetryNonce] = useState(0);
   const [state, setState] = useState({ status: "loading", data: null, error: null });
-  const closeBtnRef = useRef(null);
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    // Focus the close button so Esc works immediately and screen
-    // readers announce that a dialog opened.
-    closeBtnRef.current && closeBtnRef.current.focus();
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [onClose]);
 
   useEffect(() => {
     if (!window.RP_DestInfo) {
@@ -555,54 +577,41 @@ function DestinationModal({ cityLabel, lat, lng, onClose }) {
   const cityShort = String(cityLabel || "").split(",")[0].trim() || "destination";
   const radiusKm = Math.round(radiusM / 1000);
 
-  // Render via portal directly into document.body so no ancestor's
-  // animated transform/filter can create a containing block that
-  // would re-scope our position: fixed overlay to a sub-region.
-  return ReactDOM.createPortal(
-    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <div>
-            <h2>{cityShort}</h2>
-            <p className="modal-sub">
-              Hotels and restaurants within {radiusKm} km · data © <a
-                href="https://www.openstreetmap.org/copyright"
-                target="_blank" rel="noopener noreferrer"
-              >OpenStreetMap contributors</a>
-            </p>
-          </div>
-          <button ref={closeBtnRef} className="modal-close" onClick={onClose} aria-label="Close destination info">×</button>
+  const subtitle = (
+    <>Hotels and restaurants within {radiusKm} km · data © <a
+      href="https://www.openstreetmap.org/copyright"
+      target="_blank" rel="noopener noreferrer"
+    >OpenStreetMap contributors</a></>
+  );
+
+  return (
+    <Modal title={cityShort} subtitle={subtitle} onClose={onClose} ariaLabel="Destination info">
+      {state.status === "loading" && <DestSkeleton />}
+      {state.status === "error" && (
+        <div className="dest-error">
+          <p>{state.error}</p>
+          <button className="btn btn-ghost" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
         </div>
-        <div className="modal-body">
-          {state.status === "loading" && <DestSkeleton />}
-          {state.status === "error" && (
-            <div className="dest-error">
-              <p>{state.error}</p>
-              <button className="btn btn-ghost" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
-            </div>
-          )}
-          {state.status === "ready" && (
-            <>
-              <DestSection
-                title="Hotels"
-                items={state.data.hotels}
-                emptyLabel={`No hotels with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
-                radiusM={radiusM}
-                onExpand={() => setRadiusM(10000)}
-              />
-              <DestSection
-                title="Restaurants"
-                items={state.data.restaurants}
-                emptyLabel={`No restaurants with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
-                radiusM={radiusM}
-                onExpand={() => setRadiusM(10000)}
-              />
-            </>
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body,
+      )}
+      {state.status === "ready" && (
+        <>
+          <DestSection
+            title="Hotels"
+            items={state.data.hotels}
+            emptyLabel={`No hotels with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
+            radiusM={radiusM}
+            onExpand={() => setRadiusM(10000)}
+          />
+          <DestSection
+            title="Restaurants"
+            items={state.data.restaurants}
+            emptyLabel={`No restaurants with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
+            radiusM={radiusM}
+            onExpand={() => setRadiusM(10000)}
+          />
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -698,8 +707,308 @@ function absUrl(u) {
   return `https://${u}`;
 }
 
+// ---------- Tour day detail (elevation profile) ----------
+//
+// computeElevationProfile walks a [lng, lat, elev] slice for one stage,
+// accumulates Haversine distance, downsamples to ~targetPoints for a
+// smooth chart, and reports ascent/descent with a small smoothing window
+// to suppress GPS noise. Returns { samples, ascent, descent, max, min,
+// totalKm, hasElevation }.
+function computeElevationProfile(coords, targetPoints = 200) {
+  if (!Array.isArray(coords) || coords.length < 2) {
+    return { samples: [], ascent: 0, descent: 0, max: 0, min: 0, totalKm: 0, hasElevation: false };
+  }
+  const hasElevation = coords.every((c) => Number.isFinite(c && c[2]));
+  if (!hasElevation) {
+    return { samples: [], ascent: 0, descent: 0, max: 0, min: 0, totalKm: 0, hasElevation: false };
+  }
+  // Cumulative distance at every raw coord index.
+  const cum = new Float64Array(coords.length);
+  for (let i = 1; i < coords.length; i++) {
+    cum[i] = cum[i - 1] + distMeters(coords[i - 1], coords[i]);
+  }
+  const totalM = cum[cum.length - 1];
+
+  // Light smoothing on elevation (5-point moving average) to dampen
+  // GPS jitter without erasing real terrain features.
+  const elev = new Float64Array(coords.length);
+  for (let i = 0; i < coords.length; i++) {
+    let sum = 0, n = 0;
+    for (let k = Math.max(0, i - 2); k <= Math.min(coords.length - 1, i + 2); k++) {
+      sum += coords[k][2]; n++;
+    }
+    elev[i] = sum / n;
+  }
+
+  // Downsample to ~targetPoints by walking by equal distance steps.
+  const N = Math.max(2, Math.min(targetPoints, coords.length));
+  const samples = new Array(N);
+  let raw = 0;
+  for (let i = 0; i < N; i++) {
+    const targetM = (totalM * i) / (N - 1);
+    while (raw < cum.length - 1 && cum[raw + 1] < targetM) raw++;
+    // Linear interpolate elevation at targetM between raw and raw+1.
+    let ele;
+    if (raw >= cum.length - 1) {
+      ele = elev[cum.length - 1];
+    } else {
+      const span = cum[raw + 1] - cum[raw];
+      const t = span > 0 ? (targetM - cum[raw]) / span : 0;
+      ele = elev[raw] + (elev[raw + 1] - elev[raw]) * t;
+    }
+    samples[i] = { km: targetM / 1000, ele };
+  }
+
+  // Ascent / descent on smoothed elevation, raw cadence (more accurate
+  // than the downsampled series).
+  let ascent = 0, descent = 0, max = -Infinity, min = Infinity;
+  for (let i = 0; i < elev.length; i++) {
+    if (elev[i] > max) max = elev[i];
+    if (elev[i] < min) min = elev[i];
+    if (i > 0) {
+      const d = elev[i] - elev[i - 1];
+      if (d > 0) ascent += d; else descent += -d;
+    }
+  }
+
+  return {
+    samples,
+    ascent: Math.round(ascent),
+    descent: Math.round(descent),
+    max: Math.round(max),
+    min: Math.round(min),
+    totalKm: Math.round((totalM / 1000) * 10) / 10,
+    hasElevation: true,
+  };
+}
+
+// Open-Meteo elevation fallback. Only used when the route geometry lacks
+// the third (elevation) component — current ORS responses include it,
+// so this is defensive. Samples coords to ~150 lat/lon pairs and makes
+// one batched GET. No API key required.
+async function fetchOpenMeteoElevation(coords, samples = 150) {
+  const step = Math.max(1, Math.floor(coords.length / samples));
+  const picked = [];
+  for (let i = 0; i < coords.length; i += step) picked.push(coords[i]);
+  if (picked[picked.length - 1] !== coords[coords.length - 1]) picked.push(coords[coords.length - 1]);
+  const lats = picked.map((c) => c[1]).join(",");
+  const lngs = picked.map((c) => c[0]).join(",");
+  const url = `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Elevation API ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j.elevation) || j.elevation.length !== picked.length) {
+    throw new Error("Elevation API returned unexpected shape");
+  }
+  // Splice the elevations back as a [lng, lat, ele] series spread across
+  // the same total distance as the input.
+  return picked.map((c, i) => [c[0], c[1], j.elevation[i]]);
+}
+
+// In-memory cache for per-stage profiles. Keyed by stage indices so
+// reopening the same day's modal is instant.
+const ELEV_CACHE = new Map();
+function elevCacheKey(stage) {
+  return `${stage && stage.startIdx}-${stage && stage.endIdx}-${stage && stage.km}`;
+}
+
+function Section({ title, children }) {
+  return (
+    <section className="dest-section tour-day-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function ElevationChart({ samples, height = 220 }) {
+  const wrapRef = useRef(null);
+  const [tip, setTip] = useState(null);   // {x, km, ele}
+  const [w, setW] = useState(560);
+
+  useEffect(() => {
+    if (!wrapRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const cw = entries[0].contentRect.width;
+      if (cw > 0) setW(cw);
+    });
+    ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  if (!samples || samples.length < 2) {
+    return <div className="elev-empty">Elevation data unavailable for this stage.</div>;
+  }
+
+  const pad = { top: 14, right: 14, bottom: 26, left: 40 };
+  const innerW = Math.max(80, w - pad.left - pad.right);
+  const innerH = Math.max(80, height - pad.top - pad.bottom);
+
+  const xs = samples.map((s) => s.km);
+  const ys = samples.map((s) => s.ele);
+  const xMin = xs[0], xMax = xs[xs.length - 1];
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  // Pad vertical range so flat profiles aren't a hairline.
+  if (yMax - yMin < 50) { yMax += 25; yMin -= 25; }
+
+  const sx = (km) => pad.left + ((km - xMin) / (xMax - xMin)) * innerW;
+  const sy = (ele) => pad.top + (1 - (ele - yMin) / (yMax - yMin)) * innerH;
+
+  // Build SVG path: line for the curve, separate filled area to bottom.
+  const linePath = samples.map((s, i) => `${i === 0 ? "M" : "L"}${sx(s.km).toFixed(2)},${sy(s.ele).toFixed(2)}`).join("");
+  const areaPath = linePath
+    + `L${sx(xMax).toFixed(2)},${(pad.top + innerH).toFixed(2)}`
+    + `L${sx(xMin).toFixed(2)},${(pad.top + innerH).toFixed(2)}Z`;
+
+  // Y gridlines: 4 even ticks, rounded to a nice 10m/50m/100m increment.
+  const niceStep = (range) => {
+    const raw = range / 4;
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / pow;
+    const step = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+    return step * pow;
+  };
+  const step = niceStep(yMax - yMin);
+  const yTicks = [];
+  for (let t = Math.ceil(yMin / step) * step; t <= yMax; t += step) yTicks.push(t);
+
+  const dense = w >= 400;
+  const xTickCount = dense ? 5 : 3;
+  const xTicks = Array.from({ length: xTickCount }, (_, i) => xMin + ((xMax - xMin) * i) / (xTickCount - 1));
+
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const xPx = ((e.clientX - rect.left) / rect.width) * w;
+    if (xPx < pad.left || xPx > pad.left + innerW) { setTip(null); return; }
+    const km = xMin + ((xPx - pad.left) / innerW) * (xMax - xMin);
+    // Find nearest sample
+    let lo = 0, hi = samples.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; (samples[m].km < km ? lo = m : hi = m); }
+    const pick = Math.abs(samples[lo].km - km) < Math.abs(samples[hi].km - km) ? samples[lo] : samples[hi];
+    setTip({ x: sx(pick.km), y: sy(pick.ele), km: pick.km, ele: pick.ele });
+  };
+  const onLeave = () => setTip(null);
+
+  return (
+    <div className="elev-chart-wrap" ref={wrapRef}>
+      <svg
+        className="elev-chart"
+        viewBox={`0 0 ${w} ${height}`}
+        preserveAspectRatio="none"
+        width="100%" height={height}
+        onPointerMove={onMove} onPointerLeave={onLeave}
+        role="img" aria-label="Elevation profile"
+      >
+        {/* y gridlines + labels */}
+        {yTicks.map((t) => (
+          <g key={`y${t}`}>
+            <line x1={pad.left} x2={pad.left + innerW} y1={sy(t)} y2={sy(t)} className="elev-grid" />
+            <text x={pad.left - 6} y={sy(t)} dy="0.32em" className="elev-axis" textAnchor="end">{Math.round(t)} m</text>
+          </g>
+        ))}
+        {/* area + line */}
+        <path d={areaPath} className="elev-area" />
+        <path d={linePath} className="elev-line" />
+        {/* x ticks */}
+        {xTicks.map((t, i) => (
+          <text key={`x${i}`} x={sx(t)} y={height - 8} className="elev-axis" textAnchor="middle">
+            {t.toFixed(t > 100 ? 0 : 1)} km
+          </text>
+        ))}
+        {/* hover guide */}
+        {tip && (
+          <>
+            <line x1={tip.x} x2={tip.x} y1={pad.top} y2={pad.top + innerH} className="elev-guide" />
+            <circle cx={tip.x} cy={tip.y} r="4" className="elev-dot" />
+          </>
+        )}
+      </svg>
+      {tip && (
+        <div className="elev-tip" style={{ left: `${(tip.x / w) * 100}%` }}>
+          {tip.km.toFixed(1)} km · {Math.round(tip.ele)} m
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TourDayModal({ stage, stageIdx, coordsSlice, onClose }) {
+  const [state, setState] = useState({ status: "loading", profile: null, error: null });
+  const [retryNonce, setRetryNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading", profile: null, error: null });
+
+    // Cache hit?
+    const key = elevCacheKey(stage);
+    if (ELEV_CACHE.has(key)) {
+      setState({ status: "ready", profile: ELEV_CACHE.get(key), error: null });
+      return;
+    }
+
+    const run = async () => {
+      try {
+        let profile = computeElevationProfile(coordsSlice);
+        if (!profile.hasElevation && Array.isArray(coordsSlice) && coordsSlice.length >= 2) {
+          // Defensive fallback if a future route source omits elevation.
+          const enriched = await fetchOpenMeteoElevation(coordsSlice);
+          profile = computeElevationProfile(enriched);
+        }
+        if (cancelled) return;
+        ELEV_CACHE.set(key, profile);
+        setState({ status: "ready", profile, error: null });
+      } catch (e) {
+        if (cancelled) return;
+        setState({
+          status: "error", profile: null,
+          error: "Couldn't load elevation profile — please try again.",
+        });
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [stage, coordsSlice, retryNonce]);
+
+  const dayLabel = `Day ${stageIdx + 1} — ${cityShort(stage.from)} → ${cityShort(stage.to)}`;
+  const subtitle = state.profile
+    ? `${stage.km} km · ↑ ${state.profile.ascent} m · ↓ ${state.profile.descent} m`
+    : `${stage.km} km · ↑ ${stage.ascent || 0} m`;
+
+  return (
+    <Modal title={dayLabel} subtitle={subtitle} onClose={onClose} ariaLabel="Tour day details">
+      <Section title="Elevation Profile">
+        {state.status === "loading" && <div className="elev-skeleton" aria-busy="true" />}
+        {state.status === "error" && (
+          <div className="dest-error">
+            <p>{state.error}</p>
+            <button className="btn btn-ghost" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
+          </div>
+        )}
+        {state.status === "ready" && (
+          <>
+            <ElevationChart samples={state.profile.samples} />
+            <div className="elev-stats">
+              <div><span className="lbl">Ascent</span><span className="big">{state.profile.ascent} m</span></div>
+              <div><span className="lbl">Descent</span><span className="big">{state.profile.descent} m</span></div>
+              <div><span className="lbl">Highest</span><span className="big">{state.profile.max} m</span></div>
+              <div><span className="lbl">Lowest</span><span className="big">{state.profile.min} m</span></div>
+            </div>
+          </>
+        )}
+      </Section>
+      {/* Future sections (weather, POIs along route, road surface) can
+          slot in here as additional <Section> blocks. */}
+    </Modal>
+  );
+}
+
+function cityShort(label) {
+  return String(label || "").split(",")[0].trim() || "?";
+}
+
 // ---------- Itinerary list ----------
-function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geometry, onOpenDest }) {
+function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geometry, onOpenDest, onOpenDay }) {
   const { fmtKm, fmtElev } = window.RP_SHARED;
   return (
     <div className="itinerary">
@@ -709,6 +1018,8 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
         const coord = (geometry && s.endIdx != null) ? geometry[s.endIdx] : null;
         const hasCoord = Array.isArray(coord) && coord.length >= 2
           && Number.isFinite(coord[0]) && Number.isFinite(coord[1]);
+        const hasStageGeometry = geometry && s.startIdx != null && s.endIdx != null
+          && s.endIdx > s.startIdx;
         return (
           <div
             key={i}
@@ -728,23 +1039,38 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
                 <span><strong>↑ {fmtElev(s.ascent, units)}</strong></span>
                 <span><strong>{s.hours}</strong> hrs</span>
               </div>
-              <button
-                type="button"
-                className="btn btn-ghost stage-dest-btn"
-                disabled={!hasCoord}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!hasCoord) return;
-                  onOpenDest({
-                    cityLabel: s.to,
-                    lat: coord[1],
-                    lng: coord[0],
-                  });
-                }}
-                title={hasCoord ? "" : "Coordinates not available for this stage"}
-              >
-                Find out more about your destination
-              </button>
+              <div className="stage-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost stage-dest-btn"
+                  disabled={!hasCoord}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasCoord) return;
+                    onOpenDest({
+                      cityLabel: s.to,
+                      lat: coord[1],
+                      lng: coord[0],
+                    });
+                  }}
+                  title={hasCoord ? "" : "Coordinates not available for this stage"}
+                >
+                  Find out more about your destination
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost stage-day-btn"
+                  disabled={!hasStageGeometry}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasStageGeometry) return;
+                    onOpenDay({ stageIdx: i });
+                  }}
+                  title={hasStageGeometry ? "" : "Route geometry not available for this stage"}
+                >
+                  Find out more about your tour day
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -834,6 +1160,7 @@ function Tour({ tweaks }) {
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
   const [destView, setDestView] = useState(null);   // { cityLabel, lat, lng } | null
+  const [dayView, setDayView] = useState(null);     // { stageIdx } | null
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
@@ -994,6 +1321,7 @@ function Tour({ tweaks }) {
             startDate={startDate}
             geometry={geometry}
             onOpenDest={setDestView}
+            onOpenDay={setDayView}
           />
           <div className="plan-actions">
             <button
@@ -1017,6 +1345,19 @@ function Tour({ tweaks }) {
           lat={destView.lat}
           lng={destView.lng}
           onClose={() => setDestView(null)}
+        />
+      )}
+      {dayView && tour && tour.stages && tour.stages[dayView.stageIdx] && (
+        <TourDayModal
+          stage={tour.stages[dayView.stageIdx]}
+          stageIdx={dayView.stageIdx}
+          coordsSlice={geometry && tour.stages[dayView.stageIdx].endIdx != null
+            ? geometry.slice(
+                tour.stages[dayView.stageIdx].startIdx,
+                tour.stages[dayView.stageIdx].endIdx + 1
+              )
+            : []}
+          onClose={() => setDayView(null)}
         />
       )}
     </div>
