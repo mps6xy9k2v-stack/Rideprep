@@ -1229,7 +1229,6 @@ function Tour({ tweaks }) {
           ...s,
           lat: c ? c[1] : null,
           lng: c ? c[0] : null,
-          ...makeFakeHotel(s.to, budget),
         };
       });
 
