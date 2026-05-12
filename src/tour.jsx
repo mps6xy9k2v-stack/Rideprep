@@ -77,44 +77,28 @@ function distMeters(a, b) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
-// Walk the GeoJSON LineString, split into stages of approx `dailyKm` km.
-// Coords from ORS may be [lng, lat, elev] when elevation=true.
+// Walk the GeoJSON LineString and split into stages of approx `dailyKm` km.
+// Ascent/descent are NOT computed inline — that happens in the second pass
+// below via the shared RP_Elevation pipeline so the card, the modal, and
+// the summary bar all see the same numbers.
 async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
   const dailyM = dailyKm * 1000;
   const stages = [];
   let stageStart = 0;
-  let cum = 0;
   let stageCum = 0;
-  let stageAscent = 0;
-  let lastElev = coords[0][2] ?? 0;
-  let totalAscent = 0;
   let totalDist = 0;
 
   for (let i = 1; i < coords.length; i++) {
     const seg = distMeters(coords[i - 1], coords[i]);
-    cum += seg;
     stageCum += seg;
     totalDist += seg;
-    const e = coords[i][2] ?? lastElev;
-    const climb = Math.max(0, e - lastElev);
-    stageAscent += climb;
-    totalAscent += climb;
-    lastElev = e;
-
     if (stageCum >= dailyM && i < coords.length - 1) {
-      stages.push({ startIdx: stageStart, endIdx: i, km: stageCum / 1000, ascent: stageAscent });
+      stages.push({ startIdx: stageStart, endIdx: i, km: stageCum / 1000 });
       stageStart = i;
       stageCum = 0;
-      stageAscent = 0;
     }
   }
-  // Final stage to the very end
-  stages.push({
-    startIdx: stageStart,
-    endIdx: coords.length - 1,
-    km: stageCum / 1000,
-    ascent: stageAscent,
-  });
+  stages.push({ startIdx: stageStart, endIdx: coords.length - 1, km: stageCum / 1000 });
 
   // Reverse geocode each split point to get a city name (best effort, parallel).
   const labels = await Promise.all(
@@ -125,22 +109,33 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
     })
   );
 
+  // Second pass: compute elevation via the shared pipeline (resample +
+  // smooth + outlier clamp + delta threshold). Stage gets ascent/descent
+  // and the chart-ready samples bundled under elevationProfile.
   let prevLabel = fromLabel;
+  let totalAscent = 0;
   const built = stages.map((s, i) => {
+    const slice = coords.slice(s.startIdx, s.endIdx + 1);
+    const profile = window.RP_Elevation
+      ? window.RP_Elevation.computeProfile(slice)
+      : { totalAscent: 0, totalDescent: 0, max: 0, min: 0, samples: [], hasElevation: false };
+    totalAscent += profile.totalAscent;
     const stage = {
       from: prevLabel,
       to: labels[i],
       km: Math.round(s.km),
-      ascent: Math.round(s.ascent),
-      hours: estHours(s.km, s.ascent),
+      ascent: profile.totalAscent,
+      descent: profile.totalDescent,
+      hours: estHours(s.km, profile.totalAscent),
       startIdx: s.startIdx,
       endIdx: s.endIdx,
+      elevationProfile: profile,
     };
     prevLabel = labels[i];
     return stage;
   });
 
-  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent: Math.round(totalAscent) };
+  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent };
 }
 
 // Split a multi-waypoint route into daily stages, leg by leg.
@@ -709,78 +704,10 @@ function absUrl(u) {
 
 // ---------- Tour day detail (elevation profile) ----------
 //
-// computeElevationProfile walks a [lng, lat, elev] slice for one stage,
-// accumulates Haversine distance, downsamples to ~targetPoints for a
-// smooth chart, and reports ascent/descent with a small smoothing window
-// to suppress GPS noise. Returns { samples, ascent, descent, max, min,
-// totalKm, hasElevation }.
-function computeElevationProfile(coords, targetPoints = 200) {
-  if (!Array.isArray(coords) || coords.length < 2) {
-    return { samples: [], ascent: 0, descent: 0, max: 0, min: 0, totalKm: 0, hasElevation: false };
-  }
-  const hasElevation = coords.every((c) => Number.isFinite(c && c[2]));
-  if (!hasElevation) {
-    return { samples: [], ascent: 0, descent: 0, max: 0, min: 0, totalKm: 0, hasElevation: false };
-  }
-  // Cumulative distance at every raw coord index.
-  const cum = new Float64Array(coords.length);
-  for (let i = 1; i < coords.length; i++) {
-    cum[i] = cum[i - 1] + distMeters(coords[i - 1], coords[i]);
-  }
-  const totalM = cum[cum.length - 1];
-
-  // Light smoothing on elevation (5-point moving average) to dampen
-  // GPS jitter without erasing real terrain features.
-  const elev = new Float64Array(coords.length);
-  for (let i = 0; i < coords.length; i++) {
-    let sum = 0, n = 0;
-    for (let k = Math.max(0, i - 2); k <= Math.min(coords.length - 1, i + 2); k++) {
-      sum += coords[k][2]; n++;
-    }
-    elev[i] = sum / n;
-  }
-
-  // Downsample to ~targetPoints by walking by equal distance steps.
-  const N = Math.max(2, Math.min(targetPoints, coords.length));
-  const samples = new Array(N);
-  let raw = 0;
-  for (let i = 0; i < N; i++) {
-    const targetM = (totalM * i) / (N - 1);
-    while (raw < cum.length - 1 && cum[raw + 1] < targetM) raw++;
-    // Linear interpolate elevation at targetM between raw and raw+1.
-    let ele;
-    if (raw >= cum.length - 1) {
-      ele = elev[cum.length - 1];
-    } else {
-      const span = cum[raw + 1] - cum[raw];
-      const t = span > 0 ? (targetM - cum[raw]) / span : 0;
-      ele = elev[raw] + (elev[raw + 1] - elev[raw]) * t;
-    }
-    samples[i] = { km: targetM / 1000, ele };
-  }
-
-  // Ascent / descent on smoothed elevation, raw cadence (more accurate
-  // than the downsampled series).
-  let ascent = 0, descent = 0, max = -Infinity, min = Infinity;
-  for (let i = 0; i < elev.length; i++) {
-    if (elev[i] > max) max = elev[i];
-    if (elev[i] < min) min = elev[i];
-    if (i > 0) {
-      const d = elev[i] - elev[i - 1];
-      if (d > 0) ascent += d; else descent += -d;
-    }
-  }
-
-  return {
-    samples,
-    ascent: Math.round(ascent),
-    descent: Math.round(descent),
-    max: Math.round(max),
-    min: Math.round(min),
-    totalKm: Math.round((totalM / 1000) * 10) / 10,
-    hasElevation: true,
-  };
-}
+// Elevation math lives in src/elevation.js (window.RP_Elevation) so the
+// stage card, the tour-day modal subtitle, and the elevation chart all
+// consume the exact same numbers. See that file for the resample +
+// smooth + clamp + threshold pipeline.
 
 // Open-Meteo elevation fallback. Only used when the route geometry lacks
 // the third (elevation) component — current ORS responses include it,
@@ -940,20 +867,29 @@ function TourDayModal({ stage, stageIdx, coordsSlice, onClose }) {
     let cancelled = false;
     setState({ status: "loading", profile: null, error: null });
 
-    // Cache hit?
+    // Prefer the profile already computed at route-build time so the
+    // numbers shown here are byte-identical to the tour card.
+    if (stage && stage.elevationProfile && stage.elevationProfile.hasElevation) {
+      setState({ status: "ready", profile: stage.elevationProfile, error: null });
+      return;
+    }
+
+    // Cache hit (older tour state restored from localStorage)?
     const key = elevCacheKey(stage);
     if (ELEV_CACHE.has(key)) {
       setState({ status: "ready", profile: ELEV_CACHE.get(key), error: null });
       return;
     }
 
+    const compute = (coords) => window.RP_Elevation.computeProfile(coords);
+
     const run = async () => {
       try {
-        let profile = computeElevationProfile(coordsSlice);
+        let profile = compute(coordsSlice);
         if (!profile.hasElevation && Array.isArray(coordsSlice) && coordsSlice.length >= 2) {
           // Defensive fallback if a future route source omits elevation.
           const enriched = await fetchOpenMeteoElevation(coordsSlice);
-          profile = computeElevationProfile(enriched);
+          profile = compute(enriched);
         }
         if (cancelled) return;
         ELEV_CACHE.set(key, profile);
@@ -972,7 +908,7 @@ function TourDayModal({ stage, stageIdx, coordsSlice, onClose }) {
 
   const dayLabel = `Day ${stageIdx + 1} — ${cityShort(stage.from)} → ${cityShort(stage.to)}`;
   const subtitle = state.profile
-    ? `${stage.km} km · ↑ ${state.profile.ascent} m · ↓ ${state.profile.descent} m`
+    ? `${stage.km} km · ↑ ${state.profile.totalAscent} m · ↓ ${state.profile.totalDescent} m`
     : `${stage.km} km · ↑ ${stage.ascent || 0} m`;
 
   return (
@@ -989,8 +925,8 @@ function TourDayModal({ stage, stageIdx, coordsSlice, onClose }) {
           <>
             <ElevationChart samples={state.profile.samples} />
             <div className="elev-stats">
-              <div><span className="lbl">Ascent</span><span className="big">{state.profile.ascent} m</span></div>
-              <div><span className="lbl">Descent</span><span className="big">{state.profile.descent} m</span></div>
+              <div><span className="lbl">Ascent</span><span className="big">{state.profile.totalAscent} m</span></div>
+              <div><span className="lbl">Descent</span><span className="big">{state.profile.totalDescent} m</span></div>
               <div><span className="lbl">Highest</span><span className="big">{state.profile.max} m</span></div>
               <div><span className="lbl">Lowest</span><span className="big">{state.profile.min} m</span></div>
             </div>
