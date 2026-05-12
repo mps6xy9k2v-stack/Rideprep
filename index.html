@@ -1613,6 +1613,206 @@ input[type="range"]::-moz-range-thumb {
   to   { opacity: 1; transform: none; }
 }
 
+/* ========== WEATHER TAB ========== */
+.weather-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .weather-layout { grid-template-columns: 1fr; }
+}
+
+.weather-hero {
+  display: grid; gap: 14px;
+  padding: 22px;
+  background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  position: relative;
+  overflow: hidden;
+}
+.weather-hero::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(circle at 100% 0%, color-mix(in oklch, var(--accent) 14%, transparent), transparent 50%);
+  pointer-events: none;
+}
+.weather-hero > * { position: relative; z-index: 1; }
+.hero-label { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-dim); }
+.hero-title { font-family: var(--serif); font-style: italic; font-size: 30px; line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
+.hero-meta { display: flex; gap: 22px; flex-wrap: wrap; }
+.hero-meta div { display: grid; gap: 2px; }
+.hero-meta .l { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-faint); }
+.hero-meta .v { font-family: var(--mono); font-size: 16px; }
+
+.stop-rail { display: grid; gap: 8px; }
+.stop-rail-title { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-dim); margin: 0 4px 4px; }
+.stop-pill {
+  display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: center;
+  padding: 12px 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.stop-pill:hover { border-color: var(--line-strong); }
+.stop-pill.active { background: color-mix(in oklch, var(--accent) 7%, var(--bg-1)); border-color: var(--accent); }
+.stop-num { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
+.stop-pill.active .stop-num { color: var(--accent); }
+.stop-name { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stop-sub { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.06em; }
+.stop-mini-temp { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+
+.forecast-strip {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  padding: 16px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+@media (max-width: 720px) {
+  .forecast-strip { grid-template-columns: repeat(4, 1fr); }
+}
+.fc-day {
+  display: grid; gap: 6px; justify-items: center;
+  padding: 12px 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-align: center;
+}
+.fc-day.today { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 8%, var(--bg)); }
+.fc-day.event { border-color: var(--warm); background: color-mix(in oklch, var(--warm) 8%, var(--bg)); }
+.fc-dow { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim); }
+.fc-date { font-family: var(--mono); font-size: 11px; color: var(--fg); }
+.fc-icon { color: var(--warm); }
+.fc-icon.cool { color: var(--accent); }
+.fc-temp { font-family: var(--mono); font-size: 12px; }
+.fc-temp em { color: var(--fg-dim); font-style: normal; }
+.fc-precip { font-family: var(--mono); font-size: 9px; color: var(--accent); letter-spacing: 0.04em; }
+.fc-tag { font-family: var(--mono); font-size: 8px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--warm); }
+
+.wx-panel {
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius-lg);
+  padding: 20px;
+}
+.wx-panel h3 { margin: 0 0 10px; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; }
+.wx-panel .sub { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-faint); }
+
+.day-detail {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding: 18px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.day-detail .big-icon { width: 64px; height: 64px; color: var(--warm); display: grid; place-items: center; }
+.day-detail .big-icon.cool { color: var(--accent); }
+.day-detail-text .temp { font-family: var(--serif); font-style: italic; font-size: 48px; line-height: 1; letter-spacing: -0.02em; }
+.day-detail-text .temp em { font-style: italic; color: var(--fg-dim); font-size: 30px; margin-left: 8px; }
+.day-detail-text .cond { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim); margin-top: 4px; }
+.day-detail-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px;
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-dim);
+  text-align: right;
+}
+.day-detail-grid b { display: block; color: var(--fg); font-weight: 500; font-size: 13px; letter-spacing: -0.01em; margin-top: 2px; text-transform: none; }
+
+.hourly-row {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  margin-top: 14px;
+}
+.hourly-cell {
+  display: grid; gap: 4px; justify-items: center;
+  padding: 8px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.hourly-cell .hr { font-family: var(--mono); font-size: 9px; color: var(--fg-dim); letter-spacing: 0.06em; }
+.hourly-cell .t { font-family: var(--mono); font-size: 11px; }
+.hourly-cell .p { font-family: var(--mono); font-size: 8px; color: var(--accent); }
+
+.climate-card {
+  padding: 18px;
+  background: var(--bg);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  display: grid; gap: 14px;
+}
+.climate-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.climate-head .label { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-faint); }
+.climate-head .source { font-family: var(--mono); font-size: 9px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.08em; }
+.climate-body {
+  display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center;
+}
+.climate-body .icon { width: 56px; height: 56px; color: var(--warm); opacity: 0.85; display: grid; place-items: center; }
+.climate-body .temp { font-family: var(--serif); font-style: italic; font-size: 38px; line-height: 1; letter-spacing: -0.02em; color: var(--fg); }
+.climate-body .temp em { color: var(--fg-dim); font-size: 24px; margin-left: 6px; font-style: italic; }
+.climate-body .cap { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim); margin-top: 4px; }
+.climate-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.climate-stats div { background: var(--bg-1); padding: 10px 12px; display: grid; gap: 2px; }
+.climate-stats .l { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-faint); }
+.climate-stats .v { font-family: var(--mono); font-size: 14px; color: var(--fg); }
+
+.empty-wx {
+  display: grid; place-items: center; text-align: center;
+  padding: 50px 30px; gap: 14px;
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-lg);
+  color: var(--fg-dim);
+}
+.empty-wx svg { color: var(--fg-faint); }
+.empty-wx h3 { margin: 0; font-family: var(--serif); font-style: italic; font-size: 26px; color: var(--fg); }
+.empty-wx p { margin: 0; font-size: 14px; max-width: 360px; line-height: 1.5; }
+.empty-wx .picker {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-1); border: 1px solid var(--line-strong);
+  border-radius: 100px;
+  font-size: 14px; color: var(--fg);
+}
+
+.tour-summary-card {
+  display: grid; gap: 6px;
+  padding: 12px 14px;
+  background: color-mix(in oklch, var(--accent) 7%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--accent) 26%, var(--line));
+  border-radius: var(--radius);
+}
+.tsc-name { font-size: 13px; font-weight: 500; }
+.tsc-stats { display: flex; gap: 12px; flex-wrap: wrap; font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
+
+.plan-select {
+  width: 100%; padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 14px; color: var(--fg); font-family: var(--sans);
+}
+.plan-select:focus { outline: none; border-color: var(--accent); }
+
+.section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; gap: 12px; }
+.section-title h2 { margin: 0; font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
+.section-title h3 { margin: 0; font-size: 16px; font-weight: 500; letter-spacing: -0.02em; }
+.section-title .sub { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-faint); }
+
+/* ========== DOWNLOAD AS PDF BUTTON ========== */
+.download-pdf-btn {
 /* ========== PLAN ACTIONS (PDF + ICS) ========== */
 .plan-actions {
   display: flex;
@@ -1851,12 +2051,14 @@ input[type="range"]::-moz-range-thumb {
 
 <script type="text/babel" data-presets="react" src="./src/data.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/shared.jsx"></script>
+<script type="text/babel" data-presets="react" src="./src/weather-icons.jsx"></script>
 <script src="./src/planGenerator.js"></script>
 <script src="./src/icsExport.js"></script>
 <script src="./src/destInfo.js"></script>
 <script src="./src/elevation.js"></script>
 <script type="text/babel" data-presets="react" src="./src/training.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tour.jsx"></script>
+<script type="text/babel" data-presets="react" src="./src/weather.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tweaks.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/app.jsx"></script>
 </body>
