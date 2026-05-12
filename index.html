@@ -788,19 +788,21 @@ input[type="range"]::-moz-range-thumb {
 .stage-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 4px auto 0;
-  max-width: 440px;
+  gap: 10px;
+  margin-top: 6px;
   width: 100%;
 }
 .stage-dest-btn,
 .stage-day-btn {
-  padding: 8px 14px;
+  padding: 8px 16px;
   font-size: 12px;
   width: 100%;
   min-width: 0;
+  white-space: nowrap;
 }
-@media (max-width: 480px) {
+/* Stack as soon as both labels can no longer comfortably fit side-by-side
+   on a single line — keeps each button full-width on phones. */
+@media (max-width: 640px) {
   .stage-actions { grid-template-columns: 1fr; }
 }
 
