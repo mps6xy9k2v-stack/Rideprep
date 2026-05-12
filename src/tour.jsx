@@ -593,6 +593,16 @@ function saveTourToStorage(tour) {
     const raw = window.localStorage.getItem("ridePrep:tours");
     const list = raw ? JSON.parse(raw) : [];
     const existingIdx = list.findIndex((t) => t.from === tour.from && t.to === tour.to);
+    const stages = (tour.stages || []).map((s, i) => ({
+      idx: i,
+      from: s.from,
+      to: s.to,
+      km: s.km,
+      ascent: s.ascent,
+      hours: s.hours,
+      lat: s.lat ?? null,
+      lng: s.lng ?? null,
+    }));
     const entry = {
       id: existingIdx >= 0 ? list[existingIdx].id : `tour_${Date.now()}`,
       name: `${tour.from} → ${tour.to}`,
@@ -600,12 +610,15 @@ function saveTourToStorage(tour) {
       to: tour.to,
       totalKm: tour.totalKm || 0,
       totalAscent: tour.totalAscent || 0,
-      stageCount: (tour.stages || []).length,
+      stageCount: stages.length,
+      stages,
       savedAt: Date.now(),
     };
     if (existingIdx >= 0) list[existingIdx] = entry;
     else list.push(entry);
     window.localStorage.setItem("ridePrep:tours", JSON.stringify(list));
+    window.localStorage.setItem("ridePrep:currentTourId", entry.id);
+    try { window.dispatchEvent(new CustomEvent("rideprep:tour-saved", { detail: entry })); } catch {}
     return entry.id;
   } catch { return null; }
 }
@@ -654,11 +667,16 @@ function Tour({ tweaks }) {
   const initialDemo = useCallback(() => {
     const wps = DEMO_TOUR.waypoints;
     const geom = wps.map((w) => [w.lng, w.lat, 0]);
-    const stages = DEMO_TOUR.stages.map((s, i) => ({
-      ...s,
-      startIdx: i,
-      endIdx: i + 1,
-    }));
+    const stages = DEMO_TOUR.stages.map((s, i) => {
+      const end = wps[i + 1] || wps[wps.length - 1];
+      return {
+        ...s,
+        startIdx: i,
+        endIdx: i + 1,
+        lat: end ? end.lat : null,
+        lng: end ? end.lng : null,
+      };
+    });
     return {
       from: DEMO_TOUR.from,
       to: DEMO_TOUR.to,
@@ -725,10 +743,15 @@ function Tour({ tweaks }) {
       }
 
       const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
-      itin.stages = itin.stages.map((s) => ({
-        ...s,
-        ...makeFakeHotel(s.to, budget),
-      }));
+      itin.stages = itin.stages.map((s) => {
+        const c = coords[s.endIdx];
+        return {
+          ...s,
+          lat: c ? c[1] : null,
+          lng: c ? c[0] : null,
+          ...makeFakeHotel(s.to, budget),
+        };
+      });
 
       setTour({
         from: labels[0],
