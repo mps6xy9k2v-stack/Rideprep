@@ -479,6 +479,13 @@ const PHASE_COLOR_VAR = {
 
 const EVENT_LABEL = { race: "Race", sportive: "Sportive", longtour: "Long Tour" };
 
+// Prefer the highest-TSS week within the Peak phase; fall back to overall max.
+function pickPeakWeek(weeks) {
+  const inPeakPhase = weeks.filter((w) => w.phase === "Peak");
+  const pool = inPeakPhase.length > 0 ? inPeakPhase : weeks;
+  return pool.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+}
+
 function zoneColor(zoneId) {
   const z = window.RP_DATA.ZONES.find((x) => x.id === zoneId);
   return z ? z.color : "var(--accent)";
@@ -539,7 +546,7 @@ function EmptyPlanState() {
 function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
-  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const peak = pickPeakWeek(weeks);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
@@ -1061,7 +1068,7 @@ function PrintView({ plan, planInputs }) {
   const eventLabel = EVENT_LABEL[meta.eventType] || meta.eventType;
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
-  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const peak = pickPeakWeek(weeks);
   const generatedStr = formatPrintDate(new Date().toISOString().split("T")[0]);
   const phaseLine = phases
     .map((p) => p.startWeek === p.endWeek
@@ -1335,6 +1342,12 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     window.print();
   }
 
+  function handleDownloadIcs() {
+    if (!generatedPlan || !window.RP_IcsExport) return;
+    const filename = `${buildPlanFilename(generatedPlan)}.ics`;
+    window.RP_IcsExport.downloadIcs(generatedPlan, planStartDate(), filename);
+  }
+
   const currentWeek = generatedPlan ? generatedPlan.weeks[selectedWeek - 1] : null;
 
   return (
@@ -1409,12 +1422,21 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               plan={generatedPlan}
               currentWeekPhase={currentWeek && currentWeek.phase}
             />
-            <button
-              className="btn btn-ghost download-pdf-btn"
-              onClick={handleDownloadPdf}
-            >
-              <span aria-hidden="true">⬇</span> Download as PDF
-            </button>
+            <div className="plan-actions">
+              <button
+                className="btn btn-ghost download-pdf-btn"
+                onClick={handleDownloadPdf}
+              >
+                <span aria-hidden="true">⬇</span> Download as PDF
+              </button>
+              <button
+                className="btn btn-ghost download-ics-btn"
+                onClick={handleDownloadIcs}
+                title="Import into Apple Calendar, Google Calendar, Outlook, etc."
+              >
+                <span aria-hidden="true">⬇</span> Add to Calendar (.ics)
+              </button>
+            </div>
             <PrintView plan={generatedPlan} planInputs={planInputs} />
           </>
         )}
