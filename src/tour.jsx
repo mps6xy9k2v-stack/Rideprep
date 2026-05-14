@@ -1947,8 +1947,12 @@ function Tour({ tweaks }) {
 
   return (
     <div className="fade-in">
-      <SummaryBar tour={tour} units={tweaks.units} />
+      {/* SummaryBar sits inside the layout grid (grid-column: 1 / -1)
+          so the .fade-in > .tour-layout structure matches Training and
+          Weather and the first content row lands at the same Y across
+          tabs — no vertical jump on tab switch. */}
       <div className="tour-layout">
+        <SummaryBar tour={tour} units={tweaks.units} />
         <div className="stack" style={{ gap: 16 }}>
           <SavedToursPanel
             savedTours={savedTours}
