@@ -573,6 +573,78 @@ function useStopValidation(stops) {
   return { stopErrors, stopChecking, anyInvalid, anyChecking };
 }
 
+// ---------- Saved Tours panel ----------
+//
+// Lists every auto-saved tour. Clicking a row loads it back into the
+// planner without re-routing. The trash icon opens a confirmation modal
+// (the same one used everywhere else in the app) before removing the
+// index entry AND the per-tour blob. Empty state shown when no tours.
+function SavedToursPanel({ savedTours, onLoad, onDelete }) {
+  const [confirm, setConfirm] = useState(null); // { id, name } | null
+  if (!savedTours || savedTours.length === 0) {
+    return (
+      <div className="card stack" style={{ gap: 8 }}>
+        <div className="card-title">
+          <h2>Saved tours</h2>
+          <span className="sub">0</span>
+        </div>
+        <p className="saved-empty">No saved tours yet. Plan your first route below!</p>
+      </div>
+    );
+  }
+  // Show most-recently-saved first.
+  const sorted = savedTours.slice().sort((a, b) => b.savedAt - a.savedAt);
+  return (
+    <div className="card stack" style={{ gap: 10 }}>
+      <div className="card-title">
+        <h2>Saved tours</h2>
+        <span className="sub">{savedTours.length}</span>
+      </div>
+      <ul className="saved-list">
+        {sorted.map((t) => (
+          <li key={t.id} className="saved-row">
+            <button className="saved-load" onClick={() => onLoad(t.id)} title="Load this tour">
+              <div className="saved-name">{t.name}</div>
+              <div className="saved-stats">
+                <span>{Math.round(t.totalKm)} km</span>
+                <span>·</span>
+                <span>{t.stageCount} {t.stageCount === 1 ? "day" : "days"}</span>
+                <span>·</span>
+                <span>↑ {Math.round(t.totalAscent)} m</span>
+              </div>
+            </button>
+            <button
+              className="saved-trash"
+              onClick={() => setConfirm({ id: t.id, name: t.name })}
+              aria-label={`Delete ${t.name}`}
+              title="Delete this tour"
+            >🗑</button>
+          </li>
+        ))}
+      </ul>
+      {confirm && (
+        <Modal
+          title="Delete tour?"
+          subtitle={`This cannot be undone.`}
+          onClose={() => setConfirm(null)}
+          ariaLabel="Confirm tour delete"
+        >
+          <p style={{ margin: 0, fontSize: 14, color: "var(--fg)" }}>
+            Delete <strong>{confirm.name}</strong>?
+          </p>
+          <div className="plan-actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { onDelete(confirm.id); setConfirm(null); }}
+            >Delete</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
   const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
@@ -1449,6 +1521,11 @@ function Tour({ tweaks }) {
       <SummaryBar tour={tour} units={tweaks.units} />
       <div className="tour-layout">
         <div className="stack" style={{ gap: 16 }}>
+          <SavedToursPanel
+            savedTours={savedTours}
+            onLoad={handleLoadTour}
+            onDelete={handleDeleteTour}
+          />
           <TourForm
             stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}

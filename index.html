@@ -897,6 +897,69 @@ input[type="range"]::-moz-range-thumb {
   to   { background-position: -200% 0; }
 }
 
+/* ========== SAVED TOURS PANEL ========== */
+.saved-list {
+  list-style: none; padding: 0; margin: 0;
+  display: grid; gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.saved-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: stretch;
+}
+.saved-load {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: all .15s;
+  cursor: pointer;
+  min-width: 0;
+}
+.saved-load:hover { border-color: var(--accent); }
+.saved-name {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-stats {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--fg-dim);
+}
+.saved-trash {
+  width: 38px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: var(--radius);
+  color: var(--fg-dim);
+  font-size: 16px;
+  transition: all .15s;
+}
+.saved-trash:hover {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 60%, transparent);
+}
+.saved-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg-dim);
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
 /* ========== TOUR DAY MODAL (elevation profile) ========== */
 .tour-day-section {
   padding: 14px;
