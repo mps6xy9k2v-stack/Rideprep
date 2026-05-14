@@ -4,10 +4,9 @@
 (() => {
 
 const { useState, useEffect, useMemo, useRef } = React;
-const FORECAST_HORIZON_DAYS = 14;
+const FORECAST_HORIZON_DAYS = 16;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const TOURS_KEY = "ridePrep:tours";
-const CURRENT_ID_KEY = "ridePrep:currentTourId";
 
 // ---------- Helpers ----------
 function ymd(date) {
@@ -24,9 +23,6 @@ function readNumber(key, fallback) {
   const v = localStorage.getItem(key);
   const n = v == null ? NaN : Number(v);
   return Number.isFinite(n) ? n : fallback;
-}
-function readStr(key, fallback) {
-  return localStorage.getItem(key) || fallback;
 }
 function daysBetween(a, b) {
   return Math.round((new Date(ymd(b)) - new Date(ymd(a))) / 86400000);
@@ -281,17 +277,44 @@ function StopDetailClimate({ stop, idx, climate }) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ reason, tourName }) {
   const { IconCloud } = window;
+  let title, body;
+  switch (reason) {
+    case "no-date":
+      title = "Set an Event Start Date";
+      body = `“${tourName}” doesn't have an Event Start Date yet. Open the Tour Planner, enter a date, and plan the route again — the Weather forecast follows that date.`;
+      break;
+    case "no-stages":
+      title = "Tour has no stages yet";
+      body = `“${tourName}” doesn't have stage data on file. Re-plan the route on the Tour Planner.`;
+      break;
+    case "no-tours":
+      title = "No saved tours yet";
+      body = "Open the Tour Planner, enter an Event Start Date, and plan a route. It auto-saves and shows up here.";
+      break;
+    case "no-selection":
+    default:
+      title = "Pick a tour to see the forecast";
+      body = "Weather follows whichever tour you select. Within 14 days you'll see daily forecasts; further out we'll show the monthly climate average for each stop.";
+      break;
+  }
   return (
     <div className="fade-in">
       <div className="empty-wx">
         <IconCloud size={48} />
-        <h3>Pick a tour to see the forecast</h3>
-        <p>Weather updates whenever you save a route on the Tour planner. Within 14 days you'll see daily forecasts; further out we'll show the monthly climate average for each stop.</p>
+        <h3>{title}</h3>
+        <p>{body}</p>
         <span className="picker">
-          <span style={{ color: "var(--fg-dim)" }}>Import tour</span>
-          <span style={{ color: "var(--accent)" }}>Open the Tour Planner ▾</span>
+          <span style={{ color: "var(--fg-dim)" }}>Need a tour?</span>
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              try { window.dispatchEvent(new CustomEvent("rideprep:switch-tab", { detail: "tour" })); } catch {}
+            }}
+            style={{ color: "var(--accent)" }}
+          >Open the Tour Planner ▾</a>
         </span>
       </div>
     </div>
@@ -300,24 +323,29 @@ function EmptyState() {
 
 // ---------- Main ----------
 function WeatherTab() {
-  const [tours, setTours] = useState(readTours);
-  const [selectedTourId, setSelectedTourId] = useState(
-    () => readStr(CURRENT_ID_KEY, "") || (readTours()[0] && readTours()[0].id) || ""
-  );
-  const [activeStop, setActiveStop] = useState(() => readNumber("weather:selectedStopIndex", 0));
-  const [startDate, setStartDate] = useState(() => {
-    const saved = localStorage.getItem("weather:startDate");
-    if (saved) return saved;
-    const d = new Date();
-    d.setDate(d.getDate() + 7);
-    return ymd(d);
+  // Read the lightweight index for the dropdown. The full per-tour blob
+  // (stages with lat/lng, startDate, geometry) is fetched lazily for
+  // whichever tour is selected — see `blob` below.
+  const indexOf = () => (window.RP_TourStorage ? window.RP_TourStorage.readToursIndex() : readTours());
+  const [tours, setTours] = useState(indexOf);
+  const [selectedTourId, setSelectedTourId] = useState(() => {
+    const list = indexOf();
+    if (list.length === 0) return "";
+    // Default to the most recently saved tour, not whichever is first.
+    return list.slice().sort((a, b) => b.savedAt - a.savedAt)[0].id;
   });
+  const [activeStop, setActiveStop] = useState(() => readNumber("weather:selectedStopIndex", 0));
 
+  // Keep the dropdown in sync with auto-saves from the Tour Planner
+  // (same-tab CustomEvent) and with deletes from other tabs (storage event).
   useEffect(() => {
     const refresh = () => {
-      setTours(readTours());
-      const id = readStr(CURRENT_ID_KEY, "");
-      if (id) setSelectedTourId(id);
+      const list = indexOf();
+      setTours(list);
+      // If the previously-selected tour was deleted, fall back to newest.
+      if (list.length && !list.find((t) => t.id === selectedTourId)) {
+        setSelectedTourId(list.slice().sort((a, b) => b.savedAt - a.savedAt)[0].id);
+      }
     };
     window.addEventListener("rideprep:tour-saved", refresh);
     window.addEventListener("storage", refresh);
@@ -325,27 +353,43 @@ function WeatherTab() {
       window.removeEventListener("rideprep:tour-saved", refresh);
       window.removeEventListener("storage", refresh);
     };
-  }, []);
+  }, [selectedTourId]);
 
   useEffect(() => { localStorage.setItem("weather:selectedStopIndex", String(activeStop)); }, [activeStop]);
-  useEffect(() => { localStorage.setItem("weather:startDate", startDate); }, [startDate]);
 
+  // The index entry — names, totals, id — for the dropdown.
   const tour = useMemo(
-    () => tours.find((t) => t.id === selectedTourId) || tours[0] || null,
+    () => tours.find((t) => t.id === selectedTourId) || null,
     [tours, selectedTourId]
   );
 
-  // Tours saved by older versions may not have a `stages` array — skip those.
-  const usableStages = (tour && Array.isArray(tour.stages) && tour.stages.length) ? tour.stages : null;
+  // The full state of the selected tour. This is where stages (with lat/lng)
+  // and the canonical event startDate live. Re-reads when selection changes
+  // or when the index list signals an update (auto-save under the same id).
+  const blob = useMemo(() => {
+    if (!selectedTourId || !window.RP_TourStorage) return null;
+    return window.RP_TourStorage.readTourBlob(selectedTourId);
+  }, [selectedTourId, tours]);
+
+  const startDate = blob && blob.startDate ? blob.startDate : null;
+  const usableStages = (blob && blob.tour && Array.isArray(blob.tour.stages) && blob.tour.stages.length)
+    ? blob.tour.stages : null;
 
   const stops = useMemo(() => {
-    if (!usableStages) return [];
+    if (!usableStages || !startDate) return [];
     return usableStages.map((s, i) => {
       const d = new Date(startDate);
       d.setDate(d.getDate() + i);
-      return { ...s, date: ymd(d) };
+      // Stages from the new schema carry lat/lng (set in tour.jsx planRoute).
+      // For older entries fall back to geometry[endIdx] if the blob has it.
+      let lat = s.lat, lng = s.lng;
+      if ((lat == null || lng == null) && Array.isArray(blob.geometry) && s.endIdx != null) {
+        const c = blob.geometry[s.endIdx];
+        if (c) { lng = c[0]; lat = c[1]; }
+      }
+      return { ...s, lat, lng, date: ymd(d) };
     });
-  }, [usableStages, startDate]);
+  }, [usableStages, startDate, blob]);
 
   const stopBuckets = useMemo(() => {
     const today = new Date();
@@ -447,9 +491,10 @@ function WeatherTab() {
     return () => clearInterval(t);
   }, [cache]);
 
-  if (!tour || !usableStages) {
-    return <EmptyState />;
-  }
+  if (tours.length === 0) return <EmptyState reason="no-tours" />;
+  if (!tour) return <EmptyState reason="no-selection" />;
+  if (!startDate) return <EmptyState reason="no-date" tourName={tour.name} />;
+  if (!usableStages) return <EmptyState reason="no-stages" tourName={tour.name} />;
 
   const safeIdx = Math.min(activeStop, stopBuckets.length - 1);
   const active = stopBuckets[safeIdx];
@@ -477,18 +522,12 @@ function WeatherTab() {
               <div className="tsc-name">{tour.name}</div>
               <div className="tsc-stats">
                 <span>{tour.totalKm} km</span>
-                <span>{tour.stageCount || tour.stages.length} days</span>
+                <span>{tour.stageCount || (usableStages ? usableStages.length : 0)} days</span>
                 <span>↑ {tour.totalAscent} m</span>
               </div>
-            </div>
-            <div className="input-field" style={{ marginTop: 10 }}>
-              <label>Event start date</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                style={{ background: "transparent", border: 0, outline: 0, color: "var(--fg)", fontFamily: "var(--mono)", fontSize: 13 }}
-              />
+              <div className="tsc-event-date" style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 11, color: "var(--fg-dim)" }}>
+                Event start · {fmtLongDate(startDate)}
+              </div>
             </div>
           </div>
 

@@ -1595,4 +1595,15 @@ function Tour({ tweaks }) {
 }
 
 window.RP_Tour = Tour;
+// Expose the saved-tour storage helpers so other tabs (Weather) can
+// resolve a saved-tour id to its full blob (stages with lat/lng,
+// startDate, geometry) without reaching into localStorage directly.
+window.RP_TourStorage = {
+  readToursIndex,
+  readTourBlob,
+  saveTour,
+  deleteTour,
+  TOURS_INDEX_KEY,
+  TOUR_BLOB_PREFIX,
+};
 })();
