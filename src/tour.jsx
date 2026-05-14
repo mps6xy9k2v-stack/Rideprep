@@ -21,20 +21,33 @@ function loadFullTourState() {
 
 // ---------- ORS API helpers ----------
 const ORS_BASE = "https://api.openrouteservice.org";
+// Rideprep currently routes only inside Germany. ORS supports the
+// boundary.country filter (ISO 3166-1 alpha-3), so we constrain both
+// forward and reverse geocoding and double-check the returned country
+// code defensively.
+const COUNTRY_CODE_ALPHA3 = "DEU";
+const GERMANY_ONLY_MSG = "Rideprep currently supports only addresses in Germany. Please enter a German location.";
 
 async function orsGeocode(query, key) {
-  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1`;
+  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Geocoding failed: ${r.status}`);
   const j = await r.json();
   const f = j.features && j.features[0];
-  if (!f) throw new Error(`No results for "${query}"`);
+  if (!f) throw new Error(GERMANY_ONLY_MSG);
+  // Belt-and-braces: ORS may occasionally fuzz the filter; reject any
+  // result whose country code isn't DE / Germany.
+  const props = f.properties || {};
+  const cc = String(props.country_a || props.country_code || "").toUpperCase();
+  const cn = String(props.country || "").toLowerCase();
+  if (cc && cc !== "DEU" && cc !== "DE") throw new Error(GERMANY_ONLY_MSG);
+  if (!cc && cn && cn !== "germany" && cn !== "deutschland") throw new Error(GERMANY_ONLY_MSG);
   const [lng, lat] = f.geometry.coordinates;
-  return { lng, lat, label: f.properties.label };
+  return { lng, lat, label: props.label };
 }
 
 async function orsReverse(lat, lng, key) {
-  const url = `${ORS_BASE}/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lon=${lng}&point.lat=${lat}&size=1&layers=locality,localadmin,county`;
+  const url = `${ORS_BASE}/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lon=${lng}&point.lat=${lat}&size=1&layers=locality,localadmin,county&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) return null;
   const j = await r.json();
@@ -371,8 +384,79 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
+// Per-input Germany validator. Debounces calls to orsGeocode and caches
+// results by query string in a module-scope Map so the user can type
+// fluidly without hammering the API. Returns:
+//   stopErrors[i]  -> null when valid/empty, error string otherwise
+//   stopChecking[i] -> true while a debounced check is in flight
+//   anyInvalid     -> at least one stop has an error (planning disabled)
+//   anyChecking    -> at least one stop is mid-flight (planning disabled)
+const GEOCODE_VALIDATION_CACHE = new Map();
+function useStopValidation(stops) {
+  const [stopErrors, setStopErrors] = useState({});
+  const [stopChecking, setStopChecking] = useState({});
+
+  useEffect(() => {
+    const key = window.__ORS_API_KEY__;
+    // Without an API key the app uses the demo route, which doesn't go
+    // through ORS — skip validation to avoid a confusing always-invalid UI.
+    if (!key) {
+      setStopErrors({});
+      setStopChecking({});
+      return;
+    }
+    const handles = [];
+    const cancellers = [];
+    const nextChecking = {};
+    stops.forEach((stop, i) => {
+      const q = String(stop || "").trim();
+      if (!q) {
+        setStopErrors((prev) => ({ ...prev, [i]: null }));
+        return;
+      }
+      if (GEOCODE_VALIDATION_CACHE.has(q)) {
+        const cached = GEOCODE_VALIDATION_CACHE.get(q);
+        setStopErrors((prev) => ({ ...prev, [i]: cached.error }));
+        return;
+      }
+      nextChecking[i] = true;
+      let cancelled = false;
+      cancellers.push(() => { cancelled = true; });
+      const handle = setTimeout(async () => {
+        try {
+          await orsGeocode(q, key);
+          GEOCODE_VALIDATION_CACHE.set(q, { error: null });
+          if (!cancelled) {
+            setStopErrors((prev) => ({ ...prev, [i]: null }));
+            setStopChecking((prev) => { const n = { ...prev }; delete n[i]; return n; });
+          }
+        } catch (e) {
+          const msg = String(e && e.message ? e.message : e);
+          GEOCODE_VALIDATION_CACHE.set(q, { error: msg });
+          if (!cancelled) {
+            setStopErrors((prev) => ({ ...prev, [i]: msg }));
+            setStopChecking((prev) => { const n = { ...prev }; delete n[i]; return n; });
+          }
+        }
+      }, 600);
+      handles.push(handle);
+    });
+    setStopChecking(nextChecking);
+    return () => {
+      handles.forEach(clearTimeout);
+      cancellers.forEach((c) => c());
+    };
+  }, [stops.join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const anyInvalid = stops.some((s, i) => s.trim() && stopErrors[i]);
+  const anyChecking = Object.values(stopChecking).some(Boolean);
+  return { stopErrors, stopChecking, anyInvalid, anyChecking };
+}
+
 function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, onSave, saveFeedback, loading, error }) {
   const todayIso = todayLocalIso();
+  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
+  const planDisabled = loading || anyInvalid || anyChecking;
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -397,8 +481,18 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
                   <input
                     value={stop}
                     onChange={(e) => setStop(i, e.target.value)}
-                    placeholder="City, country"
+                    placeholder="German city or address"
+                    aria-invalid={stopErrors[i] ? "true" : "false"}
+                    aria-describedby={stopErrors[i] ? `stop-err-${i}` : undefined}
                   />
+                  {stopErrors[i] && (
+                    <div id={`stop-err-${i}`} className="input-error">
+                      {stopErrors[i]}
+                    </div>
+                  )}
+                  {!stopErrors[i] && stopChecking[i] && (
+                    <div className="input-hint">Checking…</div>
+                  )}
                 </div>
                 {!isFirst && !isLast && (
                   <button
@@ -471,8 +565,14 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
       </div>
 
       <div className="btn-row">
-        <button className="btn btn-primary" onClick={onPlan} disabled={loading} style={{ flex: 1, opacity: loading ? 0.7 : 1 }}>
-          {loading ? "Planning…" : "Plan route"}
+        <button
+          className="btn btn-primary"
+          onClick={onPlan}
+          disabled={planDisabled}
+          style={{ flex: 1, opacity: planDisabled ? 0.7 : 1 }}
+          title={anyInvalid ? "Fix the highlighted addresses to enable planning" : ""}
+        >
+          {loading ? "Planning…" : anyChecking ? "Checking addresses…" : "Plan route"}
         </button>
         <button className="btn btn-ghost" onClick={onSave}>Save</button>
       </div>

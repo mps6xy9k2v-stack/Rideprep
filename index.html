@@ -639,6 +639,22 @@ a { color: inherit; }
   font-size: 15px;
   padding: 0;
 }
+.input-field[aria-invalid="true"],
+.input-field:has(input[aria-invalid="true"]) {
+  border-color: color-mix(in oklch, var(--danger) 60%, transparent);
+}
+.input-error {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger, #c0392b);
+}
+.input-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-family: var(--mono);
+}
 .swap-btn {
   width: 34px; height: 34px;
   border-radius: 50%;
