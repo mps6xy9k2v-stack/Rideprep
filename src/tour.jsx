@@ -519,6 +519,199 @@ const STAGE_DATE_FMT = new Intl.DateTimeFormat(undefined, {
   weekday: "short", month: "short", day: "numeric",
 });
 
+// ---------- Nominatim city autocomplete ----------
+//
+// Uses the public Nominatim API (no key required) exclusively for the
+// typeahead dropdown. Actual route planning still goes through ORS.
+// Nominatim usage policy: 1 req/s max; descriptive User-Agent; cache.
+
+const DE_STATE_ABBR = {
+  "Baden-Württemberg": "BW", "Bavaria": "BY", "Bayern": "BY",
+  "Berlin": "BE", "Brandenburg": "BB", "Bremen": "HB", "Hamburg": "HH",
+  "Hesse": "HE", "Hessen": "HE",
+  "Lower Saxony": "NI", "Niedersachsen": "NI",
+  "Mecklenburg-Vorpommern": "MV",
+  "North Rhine-Westphalia": "NW", "Nordrhein-Westfalen": "NW",
+  "Rhineland-Palatinate": "RP", "Rheinland-Pfalz": "RP",
+  "Saarland": "SL",
+  "Saxony": "SN", "Sachsen": "SN",
+  "Saxony-Anhalt": "ST", "Sachsen-Anhalt": "ST",
+  "Schleswig-Holstein": "SH",
+  "Thuringia": "TH", "Thüringen": "TH",
+};
+
+const _NOM_PLACE_TYPES = new Set([
+  "city", "town", "village", "municipality", "hamlet", "suburb", "borough",
+]);
+
+function _isCityLike(r) {
+  if (r.class === "place") return _NOM_PLACE_TYPES.has(r.type);
+  if (r.class === "boundary") return r.type === "administrative";
+  return false;
+}
+
+function _formatSuggestion(r) {
+  const name = r.address.city || r.address.town || r.address.village
+             || r.address.municipality || r.name;
+  const rawCode = r.address.state_code || DE_STATE_ABBR[r.address.state] || "";
+  const state = rawCode.replace(/^DE-/i, "").substring(0, 4);
+  return state ? `${name}, ${state}, Deutschland` : `${name}, Deutschland`;
+}
+
+const _nomCache = new Map();
+
+async function nominatimSearch(query) {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const cacheKey = q.toLowerCase();
+  if (_nomCache.has(cacheKey)) return _nomCache.get(cacheKey);
+
+  const params = new URLSearchParams({
+    q,
+    countrycodes: "de",
+    featuretype: "settlement",
+    addressdetails: "1",
+    limit: "12",
+    format: "jsonv2",
+    "accept-language": "de",
+  });
+  const r = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+    headers: { "User-Agent": "Rideprep/1.0 (contact@rideprep.app)" },
+  });
+  if (!r.ok) throw new Error(`Nominatim ${r.status}`);
+
+  const data = await r.json();
+  const seen = new Set();
+  const labels = [];
+  for (const item of data) {
+    if (!_isCityLike(item)) continue;
+    const label = _formatSuggestion(item);
+    if (!seen.has(label)) { seen.add(label); labels.push(label); }
+    if (labels.length >= 8) break;
+  }
+  _nomCache.set(cacheKey, labels);
+  return labels;
+}
+
+// ARIA combobox with debounced Nominatim typeahead.
+function CityAutocomplete({ inputId, label, value, onChange, placeholder, error, checking }) {
+  const [localVal, setLocalVal] = useState(value);
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const debounceRef = useRef(null);
+  const wrapRef = useRef(null);
+
+  // Keep display value in sync when parent changes it (e.g., swap stops).
+  useEffect(() => { setLocalVal(value); }, [value]);
+
+  // Close on click/tap outside the component.
+  useEffect(() => {
+    function onPD(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPD);
+    return () => document.removeEventListener("pointerdown", onPD);
+  }, []);
+
+  function handleChange(e) {
+    const v = e.target.value;
+    setLocalVal(v);
+    onChange(v);
+    setActiveIdx(-1);
+    clearTimeout(debounceRef.current);
+    if (v.trim().length < 2) { setResults([]); setOpen(false); return; }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await nominatimSearch(v);
+        setResults(res);
+        setOpen(true);
+      } catch { /* network error — silently ignore */ }
+    }, 300);
+  }
+
+  function pick(lbl) {
+    setLocalVal(lbl);
+    onChange(lbl);
+    setResults([]);
+    setOpen(false);
+    setActiveIdx(-1);
+  }
+
+  function handleKeyDown(e) {
+    if (!open || results.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.min(i + 1, results.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const idx = activeIdx >= 0 ? activeIdx : 0;
+      if (results[idx]) pick(results[idx]);
+      else setOpen(false);
+    } else if (e.key === "Tab") {
+      if (activeIdx >= 0 && results[activeIdx]) pick(results[activeIdx]);
+      setOpen(false);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  }
+
+  const listId = (inputId || "city") + "-lb";
+  const activeOptId = activeIdx >= 0 ? `${listId}-${activeIdx}` : undefined;
+
+  return (
+    <div ref={wrapRef} style={{ flex: 1, position: "relative" }}>
+      <div className="input-field">
+        <label htmlFor={inputId}>{label}</label>
+        <input
+          id={inputId}
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded={open && results.length > 0}
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-activedescendant={activeOptId}
+          aria-invalid={error ? "true" : "false"}
+          aria-describedby={error ? `${inputId}-err` : undefined}
+          value={localVal}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onFocus={() => { if (results.length > 0) setOpen(true); }}
+          placeholder={placeholder || "Stadt …"}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {error && <div id={`${inputId}-err`} className="input-error">{error}</div>}
+        {!error && checking && <div className="input-hint">Checking…</div>}
+      </div>
+      {open && (
+        <ul id={listId} role="listbox" className="city-ac-list">
+          {results.length === 0
+            ? <li className="city-ac-empty" role="option" aria-disabled="true">
+                Keine deutsche Stadt gefunden.
+              </li>
+            : results.map((lbl, i) => (
+                <li
+                  key={lbl + i}
+                  id={`${listId}-${i}`}
+                  role="option"
+                  aria-selected={i === activeIdx}
+                  className={"city-ac-opt" + (i === activeIdx ? " city-ac-active" : "")}
+                  onMouseDown={(e) => { e.preventDefault(); pick(lbl); }}
+                >
+                  {lbl}
+                </li>
+              ))
+          }
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // ---------- Tour form ----------
 function StopMarker({ kind }) {
   // kind: "start" | "mid" | "end"
@@ -803,24 +996,15 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
                 <div style={{ width: 16, display: "grid", placeItems: "center" }}>
                   <StopMarker kind={kind} />
                 </div>
-                <div className="input-field" style={{ flex: 1 }}>
-                  <label>{label}</label>
-                  <input
-                    value={stop}
-                    onChange={(e) => setStop(i, e.target.value)}
-                    placeholder="German city or address"
-                    aria-invalid={stopErrors[i] ? "true" : "false"}
-                    aria-describedby={stopErrors[i] ? `stop-err-${i}` : undefined}
-                  />
-                  {stopErrors[i] && (
-                    <div id={`stop-err-${i}`} className="input-error">
-                      {stopErrors[i]}
-                    </div>
-                  )}
-                  {!stopErrors[i] && stopChecking[i] && (
-                    <div className="input-hint">Checking…</div>
-                  )}
-                </div>
+                <CityAutocomplete
+                  inputId={"stop-" + i}
+                  label={label}
+                  value={stop}
+                  onChange={(v) => setStop(i, v)}
+                  placeholder="Stadt eingeben …"
+                  error={stopErrors[i]}
+                  checking={stopChecking[i]}
+                />
                 {!isFirst && !isLast && (
                   <button
                     onClick={() => removeStop(i)}
