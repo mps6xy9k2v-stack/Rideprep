@@ -3,38 +3,202 @@
 (() => {
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-// ---------- Full-state persistence ----------
+// ---------- Saved-tour persistence ----------
 //
-// Auto-persist the full Tour Planner state (stops, route, settings, geometry)
-// to localStorage on every change, so switching tabs or reloading the page
-// returns the user to their last route. The lightweight "ridePrep:tours"
-// record is kept in sync as a side effect so Training sees current data
-// without requiring an explicit Save click.
-const TOUR_STATE_KEY = "ridePrep:tourState";
+// Storage schema:
+//   ridePrep:tours          — lightweight index (array of TourMeta)
+//   ridePrep:tour:<id>      — full state per tour (stops, dailyKm, startDate,
+//                             tour, geometry). Restored on app load and
+//                             when the user clicks a row in Saved Tours.
+//
+// TourMeta = { id, name, from, to, totalKm, totalAscent, stageCount,
+//              startDate, savedAt }
+//
+// Storage primitives live in src/tourStorage.js (window.RP_TourStorage)
+// so the Weather tab and other modules share the same single source of
+// truth. The few helpers below are still here because they're tied to
+// the routing/UI layer (ID derivation, display-name formatting, the
+// in-PR dedup migration that needs normalizeAddressForId).
+//
+// ID is derived from (from, to, startDate) so re-planning the same trip
+// updates the same record instead of creating duplicates.
+const _TS = () => window.RP_TourStorage;
+const TOURS_INDEX_KEY = "rideprep:savedTours:v1";  // mirrored from tourStorage.js
+const TOUR_BLOB_PREFIX = "rideprep:savedTour:v1:"; // for storage-event listeners
 
-function loadFullTourState() {
+function slugify(s) {
+  return String(s || "")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "x";
+}
+
+// Strip region/country suffix from a geocoded address so the same
+// logical place — "Bad Laer" vs "Bad Laer, NI, Deutschland" vs
+// "Bad Laer, Lower Saxony, Germany" — produces a single stable ID.
+// Display names keep the full geocoded label; only the ID uses this.
+function normalizeAddressForId(s) {
+  return String(s || "").split(",")[0].trim().toLowerCase();
+}
+
+function tourIdFor(from, to, startDate) {
+  return `${slugify(normalizeAddressForId(from))}_${slugify(normalizeAddressForId(to))}_${startDate || "nodate"}`;
+}
+
+// Back-compat shims so existing call sites in this file don't churn.
+function readToursIndex() { return _TS() ? _TS().loadSavedTours() : []; }
+function readTourBlob(id) { return _TS() ? _TS().loadTourBlob(id) : null; }
+function writeToursIndex(list) {
+  if (_TS()) _TS()._writeIndexRaw(list);
+}
+function writeTourBlob(id, blob) {
+  if (_TS()) _TS()._writeBlobRaw(id, blob);
+}
+function deleteTourBlob(id) {
+  if (_TS()) _TS()._deleteBlobRaw(id);
+}
+
+function fmtDe(isoOrNull) {
+  if (!isoOrNull) return null;
+  const m = String(isoOrNull).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return `${m[3]}.${m[2]}.${m[1]}`;
+}
+
+function cityShortLabel(label) {
+  return String(label || "").split(",")[0].trim() || "?";
+}
+
+function buildTourName(from, to, startDate) {
+  const fromS = cityShortLabel(from), toS = cityShortLabel(to);
+  const ds = fmtDe(startDate);
+  return ds ? `${fromS} → ${toS} (${ds})` : `${fromS} → ${toS}`;
+}
+
+// Thin wrapper around RP_TourStorage.saveTour that supplies the
+// derived ID and display name (which the storage layer doesn't know
+// how to compute). Returns the same { ok, reason?, id } envelope so
+// callers can surface quota errors.
+function saveTour({ tour, geometry, stops, dailyKm, startDate }) {
+  if (!_TS()) return { ok: false, reason: "no-storage" };
+  if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
+  const id = tourIdFor(tour.from, tour.to, startDate);
+  const name = buildTourName(tour.from, tour.to, startDate);
+  return _TS().saveTour({ tour, geometry, stops, dailyKm, startDate, id, name });
+}
+
+function deleteTour(id) {
+  if (_TS()) _TS().deleteTour(id);
+}
+
+function clearAllSavedTours() {
+  if (_TS()) _TS().clearAllTours();
+}
+
+// Earlier versions of this file generated tour IDs from either a
+// timestamp (`tour_<ts>`) or a slug that included the full geocoded
+// suffix ("bad-laer-ni-deutschland"). The same logical trip therefore
+// ended up under multiple IDs in the index — visible in the Saved
+// Tours dropdown as duplicates with slightly different names.
+//
+// This pass:
+//   1) re-derives each index entry's ID from normalized from+to+date
+//   2) renames the per-tour blob to the new key
+//   3) collapses same-ID entries to the most recently saved one,
+//      preferring the entry that actually has a blob.
+//
+// Gated by a version key so we only run once per browser.
+const TOURS_DEDUPE_VERSION = "v2";
+const TOURS_DEDUPE_FLAG_KEY = "ridePrep:tours:dedupe";
+
+function migrateAndDedupeTours() {
   try {
-    const raw = window.localStorage.getItem(TOUR_STATE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+    if (window.localStorage.getItem(TOURS_DEDUPE_FLAG_KEY) === TOURS_DEDUPE_VERSION) return;
+    const list = readToursIndex();
+    if (list.length === 0) {
+      window.localStorage.setItem(TOURS_DEDUPE_FLAG_KEY, TOURS_DEDUPE_VERSION);
+      return;
+    }
+    const byNewId = new Map(); // newId -> { meta, blob, oldIds:Set }
+    for (const entry of list) {
+      const newId = tourIdFor(entry.from, entry.to, entry.startDate);
+      const oldBlob = readTourBlob(entry.id);
+      const slot = byNewId.get(newId);
+      const candidate = { meta: { ...entry, id: newId }, blob: oldBlob, oldIds: new Set([entry.id]) };
+      if (!slot) {
+        byNewId.set(newId, candidate);
+        continue;
+      }
+      // Merge: prefer the one with a blob; tiebreak by savedAt.
+      slot.oldIds.add(entry.id);
+      const prefer = slot.blob && !candidate.blob
+        ? slot
+        : !slot.blob && candidate.blob ? candidate
+        : ((candidate.meta.savedAt || 0) > (slot.meta.savedAt || 0) ? candidate : slot);
+      const merged = {
+        meta: { ...prefer.meta, id: newId, savedAt: Math.max(slot.meta.savedAt || 0, candidate.meta.savedAt || 0) },
+        blob: prefer.blob,
+        oldIds: new Set([...slot.oldIds, ...candidate.oldIds]),
+      };
+      byNewId.set(newId, merged);
+    }
+    // Write the deduped index and rename blobs.
+    const nextIndex = [];
+    for (const { meta, blob, oldIds } of byNewId.values()) {
+      nextIndex.push(meta);
+      // Drop every old per-tour-blob key for this group.
+      for (const oldId of oldIds) {
+        if (oldId !== meta.id) {
+          try { window.localStorage.removeItem(TOUR_BLOB_PREFIX + oldId); } catch {}
+        }
+      }
+      if (blob) writeTourBlob(meta.id, blob);
+    }
+    writeToursIndex(nextIndex);
+    window.localStorage.setItem(TOURS_DEDUPE_FLAG_KEY, TOURS_DEDUPE_VERSION);
+  } catch {}
+}
+
+// Returns the full blob of the most recently saved tour, or null when
+// there isn't one. Used to seed Tour state on mount. The legacy-key
+// rename now lives in src/tourStorage.js (runs at module load).
+function loadMostRecentTour() {
+  migrateAndDedupeTours();
+  const list = readToursIndex();
+  if (list.length === 0) return null;
+  const latest = list.slice().sort((a, b) => b.savedAt - a.savedAt)[0];
+  return readTourBlob(latest.id);
 }
 
 // ---------- ORS API helpers ----------
 const ORS_BASE = "https://api.openrouteservice.org";
+// Rideprep currently routes only inside Germany. ORS supports the
+// boundary.country filter (ISO 3166-1 alpha-3), so we constrain both
+// forward and reverse geocoding and double-check the returned country
+// code defensively.
+const COUNTRY_CODE_ALPHA3 = "DEU";
+const GERMANY_ONLY_MSG = "Rideprep currently supports only addresses in Germany. Please enter a German location.";
 
 async function orsGeocode(query, key) {
-  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1`;
+  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Geocoding failed: ${r.status}`);
   const j = await r.json();
   const f = j.features && j.features[0];
-  if (!f) throw new Error(`No results for "${query}"`);
+  if (!f) throw new Error(GERMANY_ONLY_MSG);
+  // Belt-and-braces: ORS may occasionally fuzz the filter; reject any
+  // result whose country code isn't DE / Germany.
+  const props = f.properties || {};
+  const cc = String(props.country_a || props.country_code || "").toUpperCase();
+  const cn = String(props.country || "").toLowerCase();
+  if (cc && cc !== "DEU" && cc !== "DE") throw new Error(GERMANY_ONLY_MSG);
+  if (!cc && cn && cn !== "germany" && cn !== "deutschland") throw new Error(GERMANY_ONLY_MSG);
   const [lng, lat] = f.geometry.coordinates;
-  return { lng, lat, label: f.properties.label };
+  return { lng, lat, label: props.label };
 }
 
 async function orsReverse(lat, lng, key) {
-  const url = `${ORS_BASE}/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lon=${lng}&point.lat=${lat}&size=1&layers=locality,localadmin,county`;
+  const url = `${ORS_BASE}/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lon=${lng}&point.lat=${lat}&size=1&layers=locality,localadmin,county&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) return null;
   const j = await r.json();
@@ -371,8 +535,255 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, onSave, saveFeedback, loading, error }) {
+// Per-input Germany validator. Debounces calls to orsGeocode and caches
+// results by query string in a module-scope Map so the user can type
+// fluidly without hammering the API. Returns:
+//   stopErrors[i]  -> null when valid/empty, error string otherwise
+//   stopChecking[i] -> true while a debounced check is in flight
+//   anyInvalid     -> at least one stop has an error (planning disabled)
+//   anyChecking    -> at least one stop is mid-flight (planning disabled)
+const GEOCODE_VALIDATION_CACHE = new Map();
+function useStopValidation(stops) {
+  const [stopErrors, setStopErrors] = useState({});
+  const [stopChecking, setStopChecking] = useState({});
+
+  useEffect(() => {
+    const key = window.__ORS_API_KEY__;
+    // Without an API key the app uses the demo route, which doesn't go
+    // through ORS — skip validation to avoid a confusing always-invalid UI.
+    if (!key) {
+      setStopErrors({});
+      setStopChecking({});
+      return;
+    }
+    const handles = [];
+    const cancellers = [];
+    const nextChecking = {};
+    stops.forEach((stop, i) => {
+      const q = String(stop || "").trim();
+      if (!q) {
+        setStopErrors((prev) => ({ ...prev, [i]: null }));
+        return;
+      }
+      if (GEOCODE_VALIDATION_CACHE.has(q)) {
+        const cached = GEOCODE_VALIDATION_CACHE.get(q);
+        setStopErrors((prev) => ({ ...prev, [i]: cached.error }));
+        return;
+      }
+      nextChecking[i] = true;
+      let cancelled = false;
+      cancellers.push(() => { cancelled = true; });
+      const handle = setTimeout(async () => {
+        try {
+          await orsGeocode(q, key);
+          GEOCODE_VALIDATION_CACHE.set(q, { error: null });
+          if (!cancelled) {
+            setStopErrors((prev) => ({ ...prev, [i]: null }));
+            setStopChecking((prev) => { const n = { ...prev }; delete n[i]; return n; });
+          }
+        } catch (e) {
+          const msg = String(e && e.message ? e.message : e);
+          GEOCODE_VALIDATION_CACHE.set(q, { error: msg });
+          if (!cancelled) {
+            setStopErrors((prev) => ({ ...prev, [i]: msg }));
+            setStopChecking((prev) => { const n = { ...prev }; delete n[i]; return n; });
+          }
+        }
+      }, 600);
+      handles.push(handle);
+    });
+    setStopChecking(nextChecking);
+    return () => {
+      handles.forEach(clearTimeout);
+      cancellers.forEach((c) => c());
+    };
+  }, [stops.join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const anyInvalid = stops.some((s, i) => s.trim() && stopErrors[i]);
+  const anyChecking = Object.values(stopChecking).some(Boolean);
+  return { stopErrors, stopChecking, anyInvalid, anyChecking };
+}
+
+// ---------- Saved Tours dropdown ----------
+//
+// A collapsible dropdown so a long list doesn't push the rest of the
+// form below the fold. Click the toggle (or press Enter / Space) to
+// open; click outside, press Esc, or pick a row to close. Arrow keys
+// navigate; Enter loads. The currently-loaded tour gets a checkmark
+// dot and an .active class so it's obvious which one is in the planner.
+// Trash uses stopPropagation so it never doubles as a load.
+function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearAll }) {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState(null); // { id, name } | null
+  // Separate state for the "Clear all" confirmation — it's not a per-row
+  // delete so it needs its own modal trigger.
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [focusIdx, setFocusIdx] = useState(-1);
+  const rootRef = useRef(null);
+  const menuRef = useRef(null);
+
+  // Click outside / Esc closes the dropdown.
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const count = (savedTours || []).length;
+  const sorted = (savedTours || []).slice().sort((a, b) => b.savedAt - a.savedAt);
+
+  const onItemKeyDown = (e, id, i) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onLoad(id);
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = Math.min(sorted.length - 1, i + 1);
+      setFocusIdx(next);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prev = Math.max(0, i - 1);
+      setFocusIdx(prev);
+    }
+  };
+
+  // Move keyboard focus when focusIdx changes.
+  useEffect(() => {
+    if (!open || focusIdx < 0 || !menuRef.current) return;
+    const items = menuRef.current.querySelectorAll("[role=option]");
+    const target = items[focusIdx];
+    if (target) target.focus();
+  }, [open, focusIdx]);
+
+  if (count === 0) {
+    return (
+      <div className="saved-dropdown">
+        <button className="saved-toggle" disabled>
+          <span>Saved tours</span>
+          <span className="saved-count">0</span>
+        </button>
+        <p className="saved-empty">No saved tours yet. Plan your first route below!</p>
+      </div>
+    );
+  }
+
+  const activeName = currentTourId
+    ? (sorted.find((t) => t.id === currentTourId) || {}).name
+    : null;
+
+  return (
+    <div className="saved-dropdown" ref={rootRef}>
+      <button
+        className="saved-toggle"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => { setOpen((v) => !v); setFocusIdx(-1); }}
+      >
+        <span className="saved-toggle-label">
+          {activeName ? activeName : "Saved tours"}
+        </span>
+        <span className="saved-count">{count}</span>
+        <span className="saved-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <ul className="saved-menu" role="listbox" ref={menuRef} aria-label="Saved tours">
+          {sorted.map((t, i) => {
+            const isActive = t.id === currentTourId;
+            return (
+              <li
+                key={t.id}
+                className={"saved-menu-item" + (isActive ? " active" : "")}
+                role="option"
+                aria-selected={isActive}
+                tabIndex={0}
+                onClick={() => { onLoad(t.id); setOpen(false); }}
+                onKeyDown={(e) => onItemKeyDown(e, t.id, i)}
+              >
+                <span className="saved-active-dot" aria-hidden="true">{isActive ? "✓" : ""}</span>
+                <div className="saved-main">
+                  <div className="saved-name">{t.name}</div>
+                  <div className="saved-stats">
+                    <span>{Math.round(t.totalKm)} km</span>
+                    <span>·</span>
+                    <span>{t.stageCount} {t.stageCount === 1 ? "day" : "days"}</span>
+                    <span>·</span>
+                    <span>↑ {Math.round(t.totalAscent)} m</span>
+                  </div>
+                </div>
+                <button
+                  className="saved-trash"
+                  onClick={(e) => { e.stopPropagation(); setConfirm({ id: t.id, name: t.name }); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); }}
+                  aria-label={`Delete ${t.name}`}
+                  title="Delete this tour"
+                >🗑</button>
+              </li>
+            );
+          })}
+          <li className="saved-menu-clear" role="presentation">
+            <button
+              type="button"
+              className="saved-clear-all"
+              onClick={(e) => { e.stopPropagation(); setConfirmClearAll(true); }}
+            >Clear all saved tours</button>
+          </li>
+        </ul>
+      )}
+      {confirm && (
+        <Modal
+          title="Delete tour?"
+          subtitle="This cannot be undone."
+          onClose={() => setConfirm(null)}
+          ariaLabel="Confirm tour delete"
+        >
+          <p style={{ margin: 0, fontSize: 14, color: "var(--fg)" }}>
+            Delete <strong>{confirm.name}</strong>?
+          </p>
+          <div className="plan-actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { onDelete(confirm.id); setConfirm(null); }}
+            >Delete</button>
+          </div>
+        </Modal>
+      )}
+      {confirmClearAll && (
+        <Modal
+          title="Clear all saved tours?"
+          subtitle="This cannot be undone."
+          onClose={() => setConfirmClearAll(false)}
+          ariaLabel="Confirm clear all tours"
+        >
+          <p style={{ margin: 0, fontSize: 14, color: "var(--fg)" }}>
+            Delete all <strong>{savedTours.length}</strong> saved tour{savedTours.length === 1 ? "" : "s"}?
+          </p>
+          <div className="plan-actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setConfirmClearAll(false)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { onClearAll(); setConfirmClearAll(false); setOpen(false); }}
+            >Delete all</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
+  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
+  const planDisabled = loading || anyInvalid || anyChecking;
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -397,8 +808,18 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
                   <input
                     value={stop}
                     onChange={(e) => setStop(i, e.target.value)}
-                    placeholder="City, country"
+                    placeholder="German city or address"
+                    aria-invalid={stopErrors[i] ? "true" : "false"}
+                    aria-describedby={stopErrors[i] ? `stop-err-${i}` : undefined}
                   />
+                  {stopErrors[i] && (
+                    <div id={`stop-err-${i}`} className="input-error">
+                      {stopErrors[i]}
+                    </div>
+                  )}
+                  {!stopErrors[i] && stopChecking[i] && (
+                    <div className="input-hint">Checking…</div>
+                  )}
                 </div>
                 {!isFirst && !isLast && (
                   <button
@@ -471,15 +892,16 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
       </div>
 
       <div className="btn-row">
-        <button className="btn btn-primary" onClick={onPlan} disabled={loading} style={{ flex: 1, opacity: loading ? 0.7 : 1 }}>
-          {loading ? "Planning…" : "Plan route"}
+        <button
+          className="btn btn-primary"
+          onClick={onPlan}
+          disabled={planDisabled}
+          style={{ flex: 1, opacity: planDisabled ? 0.7 : 1 }}
+          title={anyInvalid ? "Fix the highlighted addresses to enable planning" : ""}
+        >
+          {loading ? "Planning…" : anyChecking ? "Checking addresses…" : "Plan route"}
         </button>
-        <button className="btn btn-ghost" onClick={onSave}>Save</button>
       </div>
-
-      {saveFeedback && (
-        <div className="save-feedback">{saveFeedback}</div>
-      )}
 
       {error && (
         <div style={{
@@ -1040,59 +1462,19 @@ function SummaryBar({ tour, units }) {
   );
 }
 
-// ---------- localStorage persistence ----------
-//
-// Tour Planner state is local to this component and not shared. The "Save"
-// button writes a lightweight record (no geometry) to ridePrep:tours so the
-// Training page can read available tours without depending on component state.
-//
-// Saved record shape:
-//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
-//
-// Tours are identified by from+to — saving the same route overwrites the
-// previous entry with the same stable id, keeping Training's tourId reference
-// valid across re-saves.
-function saveTourToStorage(tour) {
-  try {
-    const raw = window.localStorage.getItem("ridePrep:tours");
-    const list = raw ? JSON.parse(raw) : [];
-    const existingIdx = list.findIndex((t) => t.from === tour.from && t.to === tour.to);
-    const stages = (tour.stages || []).map((s, i) => ({
-      idx: i,
-      from: s.from,
-      to: s.to,
-      km: s.km,
-      ascent: s.ascent,
-      hours: s.hours,
-      lat: s.lat ?? null,
-      lng: s.lng ?? null,
-    }));
-    const entry = {
-      id: existingIdx >= 0 ? list[existingIdx].id : `tour_${Date.now()}`,
-      name: `${tour.from} → ${tour.to}`,
-      from: tour.from,
-      to: tour.to,
-      totalKm: tour.totalKm || 0,
-      totalAscent: tour.totalAscent || 0,
-      stageCount: stages.length,
-      stages,
-      savedAt: Date.now(),
-    };
-    if (existingIdx >= 0) list[existingIdx] = entry;
-    else list.push(entry);
-    window.localStorage.setItem("ridePrep:tours", JSON.stringify(list));
-    window.localStorage.setItem("ridePrep:currentTourId", entry.id);
-    try { window.dispatchEvent(new CustomEvent("rideprep:tour-saved", { detail: entry })); } catch {}
-    return entry.id;
-  } catch { return null; }
-}
+// The lightweight saveTourToStorage that pre-existed here has been
+// replaced by saveTour() at the top of this file, which writes both the
+// index entry and the full per-tour blob (so Saved Tours can restore a
+// trip without re-routing). Auto-save is wired in planRoute below.
 
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
-  // Load any previously-persisted state once on mount. Subsequent renders
-  // reuse the same object via useMemo so the lazy useState initialisers
-  // below all see the same snapshot.
-  const saved = useMemo(() => loadFullTourState(), []);
+  // Load the most recently saved tour on mount. saveTour() writes both
+  // the lightweight index and a full per-tour blob, so a returning user
+  // lands on their last planned trip with route, stages, and chart all
+  // intact (no re-routing required). Legacy ridePrep:tourState payloads
+  // are migrated into the new schema on first read.
+  const saved = useMemo(() => loadMostRecentTour(), []);
   const { DEMO_TOUR: _DT } = window.RP_DATA;
   const defaultStops = [_DT.from, _DT.to];
 
@@ -1159,22 +1541,23 @@ function Tour({ tweaks }) {
 
   const [tour, setTour] = useState(() => (saved && saved.tour) || initialDemo());
   const [geometry, setGeometry] = useState(() => (saved && saved.geometry) || initialDemo()._geom);
-  const [saveFeedback, setSaveFeedback] = useState(null);
+  // Index of saved tours mirrored in component state so the Saved Tours
+  // panel re-renders when an auto-save lands or a delete happens.
+  const [savedTours, setSavedTours] = useState(() => readToursIndex());
+  // Banner shown when a localStorage write hits the browser quota.
+  // null when storage is fine; a string message when not. Cleared by
+  // the user dismissing it or by the next successful save.
+  const [storageBanner, setStorageBanner] = useState(null);
 
-  // Auto-persist the full state on any change so tab switches and reloads
-  // restore the user's tour. Also write the lightweight ridePrep:tours record
-  // so Training picks up edits without an explicit Save click.
+  // Cross-tab live updates: another tab / window deleting a tour or
+  // saving one should reflect here without a manual reload.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        TOUR_STATE_KEY,
-        JSON.stringify({ tour, geometry, stops, dailyKm, startDate })
-      );
-    } catch {}
-    if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
-      saveTourToStorage(tour);
-    }
-  }, [tour, geometry, stops, dailyKm, startDate]);
+    const onStorage = (e) => {
+      if (e.key === TOURS_INDEX_KEY) setSavedTours(readToursIndex());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const canDownloadIcs = !!startDate && !!tour && Array.isArray(tour.stages) && tour.stages.length > 0;
 
@@ -1186,11 +1569,57 @@ function Tour({ tweaks }) {
     window.RP_IcsExport.downloadTourIcs(tour, startDate, filename);
   }, [canDownloadIcs, tour, startDate]);
 
-  const handleSave = useCallback(() => {
-    const id = saveTourToStorage(tour);
-    setSaveFeedback(id ? "Tour saved!" : "Save failed");
-    setTimeout(() => setSaveFeedback(null), 2500);
-  }, [tour]);
+  // Saved Tours actions exposed to the panel.
+  // Two paths:
+  //  - happy path: the per-tour blob is present → fully restore stops,
+  //    dailyKm, startDate, tour, geometry without re-routing.
+  //  - blob-less fallback: older index entries had no blob (the legacy
+  //    saveTourToStorage never wrote one). Restore at least the stops
+  //    and startDate so clicking the row isn't a dead click — the user
+  //    can hit Plan route to regenerate geometry.
+  const handleLoadTour = useCallback((id) => {
+    const blob = readTourBlob(id);
+    if (blob && blob.tour) {
+      if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
+      if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
+      setStartDate(blob.startDate || null);
+      setTour(blob.tour);
+      setGeometry(blob.geometry || []);
+      setActiveStage(0);
+      return;
+    }
+    const entry = readToursIndex().find((t) => t.id === id);
+    if (!entry) return;
+    setStops([entry.from, entry.to]);
+    setStartDate(entry.startDate || null);
+    setActiveStage(0);
+  }, []);
+  const handleDeleteTour = useCallback((id) => {
+    // If we're deleting the currently-loaded tour, reset the planner so
+    // the map / itinerary / summary bar don't keep showing stale data.
+    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate);
+    deleteTour(id);
+    if (id === currentId) {
+      const demo = initialDemo();
+      setTour({ ...demo, _geom: undefined });
+      setGeometry(demo._geom);
+      setStops(defaultStops);
+      setActiveStage(0);
+    }
+    setSavedTours(readToursIndex());
+  }, [tour, startDate, initialDemo, defaultStops]);
+
+  const handleClearAllTours = useCallback(() => {
+    clearAllSavedTours();
+    setSavedTours([]);
+    setStorageBanner(null);
+    const demo = initialDemo();
+    setTour({ ...demo, _geom: undefined });
+    setGeometry(demo._geom);
+    setStops(defaultStops);
+    setStartDate(null);
+    setActiveStage(0);
+  }, [initialDemo, defaultStops]);
 
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
@@ -1232,7 +1661,7 @@ function Tour({ tweaks }) {
         };
       });
 
-      setTour({
+      const nextTour = {
         from: labels[0],
         to: labels[labels.length - 1],
         stops: labels,
@@ -1241,28 +1670,57 @@ function Tour({ tweaks }) {
         totalAscent: itin.totalAscent,
         meters: summary && summary.distance,
         seconds: summary && summary.duration,
-      });
+      };
+      setTour(nextTour);
       setGeometry(coords);
       setActiveStage(0);
+      // Auto-save: silent on success, surfaces a banner on quota
+      // failure so the user knows storage is full.
+      const saveResult = saveTour({
+        tour: nextTour,
+        geometry: coords,
+        stops: labels,
+        dailyKm,
+        startDate,
+      });
+      if (saveResult && saveResult.reason === "quota") {
+        setStorageBanner("Storage limit reached. Delete some saved tours to make room.");
+      }
+      setSavedTours(readToursIndex());
     } catch (e) {
       setError(String(e.message || e));
     } finally {
       setLoading(false);
     }
-  }, [stops, dailyKm, initialDemo]);
+  }, [stops, dailyKm, startDate, initialDemo]);
 
   return (
     <div className="fade-in">
       <SummaryBar tour={tour} units={tweaks.units} />
       <div className="tour-layout">
         <div className="stack" style={{ gap: 16 }}>
+          <SavedToursPanel
+            savedTours={savedTours}
+            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate)}
+            onLoad={handleLoadTour}
+            onDelete={handleDeleteTour}
+            onClearAll={handleClearAllTours}
+          />
+          {storageBanner && (
+            <div className="storage-banner" role="alert">
+              <span>{storageBanner}</span>
+              <button
+                className="storage-banner-close"
+                onClick={() => setStorageBanner(null)}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
           <TourForm
             stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
             onPlan={planRoute}
-            onSave={handleSave}
-            saveFeedback={saveFeedback}
             loading={loading}
             error={error}
           />
@@ -1327,4 +1785,7 @@ function Tour({ tweaks }) {
 }
 
 window.RP_Tour = Tour;
+// window.RP_TourStorage is provided by src/tourStorage.js (loaded
+// before this file), so other tabs (Weather) and migrations share one
+// API surface. We don't re-export anything here to avoid clobbering it.
 })();

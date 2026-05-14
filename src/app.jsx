@@ -99,7 +99,7 @@ function App() {
         </div>
         <div className="header-meta">
           {tab === "weather"
-            ? <Pill>14-day window</Pill>
+            ? <Pill>16-day window</Pill>
             : <>
                 <Pill>2026 · W19</Pill>
                 {fitnessLabel && (
