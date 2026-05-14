@@ -21,7 +21,7 @@ function App() {
   // without threading setTab through the prop tree.
   useEffect(() => {
     const handler = (e) => {
-      if (e.detail === "training" || e.detail === "tour") setTab(e.detail);
+      if (e.detail === "training" || e.detail === "tour" || e.detail === "weather") setTab(e.detail);
     };
     window.addEventListener("rideprep:switch-tab", handler);
     return () => window.removeEventListener("rideprep:switch-tab", handler);
@@ -61,6 +61,7 @@ function App() {
       : "Your self-rated fitness level. Used to estimate workout intensities since you didn't enter an FTP.";
   const Training = window.RP_Training;
   const Tour = window.RP_Tour;
+  const Weather = window.RP_Weather;
   const Tweaks = window.RP_Tweaks;
 
   return (
@@ -86,21 +87,34 @@ function App() {
             <span className="tab-dot" />
             Tour Planner
           </button>
+          <button
+            role="tab"
+            className="tab"
+            aria-selected={tab === "weather"}
+            onClick={() => setTab("weather")}
+          >
+            <span className="tab-dot" />
+            Weather
+          </button>
         </div>
         <div className="header-meta">
-          <Pill>2026 · W19</Pill>
-          {fitnessLabel && (
-            <Tooltip content={fitnessTip} side="bottom">
-              <Pill>{fitnessLabel}</Pill>
-            </Tooltip>
-          )}
+          {tab === "weather"
+            ? <Pill>16-day window</Pill>
+            : <>
+                <Pill>2026 · W19</Pill>
+                {fitnessLabel && (
+                  <Tooltip content={fitnessTip} side="bottom">
+                    <Pill>{fitnessLabel}</Pill>
+                  </Tooltip>
+                )}
+              </>}
         </div>
       </header>
 
       <main className="view">
-        {tab === "training"
-          ? <Training goal={goal} setGoal={setGoal} />
-          : <Tour tweaks={tweaks} />}
+        {tab === "training" && <Training goal={goal} setGoal={setGoal} />}
+        {tab === "tour" && <Tour tweaks={tweaks} />}
+        {tab === "weather" && Weather && <Weather />}
       </main>
 
       <Tweaks tweaks={tweaks} setTweaks={setTweaks} />

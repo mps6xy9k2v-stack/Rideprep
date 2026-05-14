@@ -1,40 +1,204 @@
-/* global window, React, L */
+/* global window, React, ReactDOM, L */
 // Tour planner: form + Leaflet map with OpenRouteService routing.
 (() => {
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-// ---------- Full-state persistence ----------
+// ---------- Saved-tour persistence ----------
 //
-// Auto-persist the full Tour Planner state (stops, route, settings, geometry)
-// to localStorage on every change, so switching tabs or reloading the page
-// returns the user to their last route. The lightweight "ridePrep:tours"
-// record is kept in sync as a side effect so Training sees current data
-// without requiring an explicit Save click.
-const TOUR_STATE_KEY = "ridePrep:tourState";
+// Storage schema:
+//   ridePrep:tours          — lightweight index (array of TourMeta)
+//   ridePrep:tour:<id>      — full state per tour (stops, dailyKm, startDate,
+//                             tour, geometry). Restored on app load and
+//                             when the user clicks a row in Saved Tours.
+//
+// TourMeta = { id, name, from, to, totalKm, totalAscent, stageCount,
+//              startDate, savedAt }
+//
+// Storage primitives live in src/tourStorage.js (window.RP_TourStorage)
+// so the Weather tab and other modules share the same single source of
+// truth. The few helpers below are still here because they're tied to
+// the routing/UI layer (ID derivation, display-name formatting, the
+// in-PR dedup migration that needs normalizeAddressForId).
+//
+// ID is derived from (from, to, startDate) so re-planning the same trip
+// updates the same record instead of creating duplicates.
+const _TS = () => window.RP_TourStorage;
+const TOURS_INDEX_KEY = "rideprep:savedTours:v1";  // mirrored from tourStorage.js
+const TOUR_BLOB_PREFIX = "rideprep:savedTour:v1:"; // for storage-event listeners
 
-function loadFullTourState() {
+function slugify(s) {
+  return String(s || "")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "x";
+}
+
+// Strip region/country suffix from a geocoded address so the same
+// logical place — "Bad Laer" vs "Bad Laer, NI, Deutschland" vs
+// "Bad Laer, Lower Saxony, Germany" — produces a single stable ID.
+// Display names keep the full geocoded label; only the ID uses this.
+function normalizeAddressForId(s) {
+  return String(s || "").split(",")[0].trim().toLowerCase();
+}
+
+function tourIdFor(from, to, startDate) {
+  return `${slugify(normalizeAddressForId(from))}_${slugify(normalizeAddressForId(to))}_${startDate || "nodate"}`;
+}
+
+// Back-compat shims so existing call sites in this file don't churn.
+function readToursIndex() { return _TS() ? _TS().loadSavedTours() : []; }
+function readTourBlob(id) { return _TS() ? _TS().loadTourBlob(id) : null; }
+function writeToursIndex(list) {
+  if (_TS()) _TS()._writeIndexRaw(list);
+}
+function writeTourBlob(id, blob) {
+  if (_TS()) _TS()._writeBlobRaw(id, blob);
+}
+function deleteTourBlob(id) {
+  if (_TS()) _TS()._deleteBlobRaw(id);
+}
+
+function fmtDe(isoOrNull) {
+  if (!isoOrNull) return null;
+  const m = String(isoOrNull).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return `${m[3]}.${m[2]}.${m[1]}`;
+}
+
+function cityShortLabel(label) {
+  return String(label || "").split(",")[0].trim() || "?";
+}
+
+function buildTourName(from, to, startDate) {
+  const fromS = cityShortLabel(from), toS = cityShortLabel(to);
+  const ds = fmtDe(startDate);
+  return ds ? `${fromS} → ${toS} (${ds})` : `${fromS} → ${toS}`;
+}
+
+// Thin wrapper around RP_TourStorage.saveTour that supplies the
+// derived ID and display name (which the storage layer doesn't know
+// how to compute). Returns the same { ok, reason?, id } envelope so
+// callers can surface quota errors.
+function saveTour({ tour, geometry, stops, dailyKm, startDate }) {
+  if (!_TS()) return { ok: false, reason: "no-storage" };
+  if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
+  const id = tourIdFor(tour.from, tour.to, startDate);
+  const name = buildTourName(tour.from, tour.to, startDate);
+  return _TS().saveTour({ tour, geometry, stops, dailyKm, startDate, id, name });
+}
+
+function deleteTour(id) {
+  if (_TS()) _TS().deleteTour(id);
+}
+
+function clearAllSavedTours() {
+  if (_TS()) _TS().clearAllTours();
+}
+
+// Earlier versions of this file generated tour IDs from either a
+// timestamp (`tour_<ts>`) or a slug that included the full geocoded
+// suffix ("bad-laer-ni-deutschland"). The same logical trip therefore
+// ended up under multiple IDs in the index — visible in the Saved
+// Tours dropdown as duplicates with slightly different names.
+//
+// This pass:
+//   1) re-derives each index entry's ID from normalized from+to+date
+//   2) renames the per-tour blob to the new key
+//   3) collapses same-ID entries to the most recently saved one,
+//      preferring the entry that actually has a blob.
+//
+// Gated by a version key so we only run once per browser.
+const TOURS_DEDUPE_VERSION = "v2";
+const TOURS_DEDUPE_FLAG_KEY = "ridePrep:tours:dedupe";
+
+function migrateAndDedupeTours() {
   try {
-    const raw = window.localStorage.getItem(TOUR_STATE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+    if (window.localStorage.getItem(TOURS_DEDUPE_FLAG_KEY) === TOURS_DEDUPE_VERSION) return;
+    const list = readToursIndex();
+    if (list.length === 0) {
+      window.localStorage.setItem(TOURS_DEDUPE_FLAG_KEY, TOURS_DEDUPE_VERSION);
+      return;
+    }
+    const byNewId = new Map(); // newId -> { meta, blob, oldIds:Set }
+    for (const entry of list) {
+      const newId = tourIdFor(entry.from, entry.to, entry.startDate);
+      const oldBlob = readTourBlob(entry.id);
+      const slot = byNewId.get(newId);
+      const candidate = { meta: { ...entry, id: newId }, blob: oldBlob, oldIds: new Set([entry.id]) };
+      if (!slot) {
+        byNewId.set(newId, candidate);
+        continue;
+      }
+      // Merge: prefer the one with a blob; tiebreak by savedAt.
+      slot.oldIds.add(entry.id);
+      const prefer = slot.blob && !candidate.blob
+        ? slot
+        : !slot.blob && candidate.blob ? candidate
+        : ((candidate.meta.savedAt || 0) > (slot.meta.savedAt || 0) ? candidate : slot);
+      const merged = {
+        meta: { ...prefer.meta, id: newId, savedAt: Math.max(slot.meta.savedAt || 0, candidate.meta.savedAt || 0) },
+        blob: prefer.blob,
+        oldIds: new Set([...slot.oldIds, ...candidate.oldIds]),
+      };
+      byNewId.set(newId, merged);
+    }
+    // Write the deduped index and rename blobs.
+    const nextIndex = [];
+    for (const { meta, blob, oldIds } of byNewId.values()) {
+      nextIndex.push(meta);
+      // Drop every old per-tour-blob key for this group.
+      for (const oldId of oldIds) {
+        if (oldId !== meta.id) {
+          try { window.localStorage.removeItem(TOUR_BLOB_PREFIX + oldId); } catch {}
+        }
+      }
+      if (blob) writeTourBlob(meta.id, blob);
+    }
+    writeToursIndex(nextIndex);
+    window.localStorage.setItem(TOURS_DEDUPE_FLAG_KEY, TOURS_DEDUPE_VERSION);
+  } catch {}
+}
+
+// Returns the full blob of the most recently saved tour, or null when
+// there isn't one. Used to seed Tour state on mount. The legacy-key
+// rename now lives in src/tourStorage.js (runs at module load).
+function loadMostRecentTour() {
+  migrateAndDedupeTours();
+  const list = readToursIndex();
+  if (list.length === 0) return null;
+  const latest = list.slice().sort((a, b) => b.savedAt - a.savedAt)[0];
+  return readTourBlob(latest.id);
 }
 
 // ---------- ORS API helpers ----------
 const ORS_BASE = "https://api.openrouteservice.org";
+// Rideprep currently routes only inside Germany. ORS supports the
+// boundary.country filter (ISO 3166-1 alpha-3), so we constrain both
+// forward and reverse geocoding and double-check the returned country
+// code defensively.
+const COUNTRY_CODE_ALPHA3 = "DEU";
+const GERMANY_ONLY_MSG = "Rideprep currently supports only addresses in Germany. Please enter a German location.";
 
 async function orsGeocode(query, key) {
-  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1`;
+  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Geocoding failed: ${r.status}`);
   const j = await r.json();
   const f = j.features && j.features[0];
-  if (!f) throw new Error(`No results for "${query}"`);
+  if (!f) throw new Error(GERMANY_ONLY_MSG);
+  // Belt-and-braces: ORS may occasionally fuzz the filter; reject any
+  // result whose country code isn't DE / Germany.
+  const props = f.properties || {};
+  const cc = String(props.country_a || props.country_code || "").toUpperCase();
+  const cn = String(props.country || "").toLowerCase();
+  if (cc && cc !== "DEU" && cc !== "DE") throw new Error(GERMANY_ONLY_MSG);
+  if (!cc && cn && cn !== "germany" && cn !== "deutschland") throw new Error(GERMANY_ONLY_MSG);
   const [lng, lat] = f.geometry.coordinates;
-  return { lng, lat, label: f.properties.label };
+  return { lng, lat, label: props.label };
 }
 
 async function orsReverse(lat, lng, key) {
-  const url = `${ORS_BASE}/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lon=${lng}&point.lat=${lat}&size=1&layers=locality,localadmin,county`;
+  const url = `${ORS_BASE}/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lon=${lng}&point.lat=${lat}&size=1&layers=locality,localadmin,county&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) return null;
   const j = await r.json();
@@ -77,44 +241,28 @@ function distMeters(a, b) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
-// Walk the GeoJSON LineString, split into stages of approx `dailyKm` km.
-// Coords from ORS may be [lng, lat, elev] when elevation=true.
+// Walk the GeoJSON LineString and split into stages of approx `dailyKm` km.
+// Ascent/descent are NOT computed inline — that happens in the second pass
+// below via the shared RP_Elevation pipeline so the card, the modal, and
+// the summary bar all see the same numbers.
 async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
   const dailyM = dailyKm * 1000;
   const stages = [];
   let stageStart = 0;
-  let cum = 0;
   let stageCum = 0;
-  let stageAscent = 0;
-  let lastElev = coords[0][2] ?? 0;
-  let totalAscent = 0;
   let totalDist = 0;
 
   for (let i = 1; i < coords.length; i++) {
     const seg = distMeters(coords[i - 1], coords[i]);
-    cum += seg;
     stageCum += seg;
     totalDist += seg;
-    const e = coords[i][2] ?? lastElev;
-    const climb = Math.max(0, e - lastElev);
-    stageAscent += climb;
-    totalAscent += climb;
-    lastElev = e;
-
     if (stageCum >= dailyM && i < coords.length - 1) {
-      stages.push({ startIdx: stageStart, endIdx: i, km: stageCum / 1000, ascent: stageAscent });
+      stages.push({ startIdx: stageStart, endIdx: i, km: stageCum / 1000 });
       stageStart = i;
       stageCum = 0;
-      stageAscent = 0;
     }
   }
-  // Final stage to the very end
-  stages.push({
-    startIdx: stageStart,
-    endIdx: coords.length - 1,
-    km: stageCum / 1000,
-    ascent: stageAscent,
-  });
+  stages.push({ startIdx: stageStart, endIdx: coords.length - 1, km: stageCum / 1000 });
 
   // Reverse geocode each split point to get a city name (best effort, parallel).
   const labels = await Promise.all(
@@ -125,22 +273,33 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
     })
   );
 
+  // Second pass: compute elevation via the shared pipeline (resample +
+  // smooth + outlier clamp + delta threshold). Stage gets ascent/descent
+  // and the chart-ready samples bundled under elevationProfile.
   let prevLabel = fromLabel;
+  let totalAscent = 0;
   const built = stages.map((s, i) => {
+    const slice = coords.slice(s.startIdx, s.endIdx + 1);
+    const profile = window.RP_Elevation
+      ? window.RP_Elevation.computeProfile(slice)
+      : { totalAscent: 0, totalDescent: 0, max: 0, min: 0, samples: [], hasElevation: false };
+    totalAscent += profile.totalAscent;
     const stage = {
       from: prevLabel,
       to: labels[i],
       km: Math.round(s.km),
-      ascent: Math.round(s.ascent),
-      hours: estHours(s.km, s.ascent),
+      ascent: profile.totalAscent,
+      descent: profile.totalDescent,
+      hours: estHours(s.km, profile.totalAscent),
       startIdx: s.startIdx,
       endIdx: s.endIdx,
+      elevationProfile: profile,
     };
     prevLabel = labels[i];
     return stage;
   });
 
-  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent: Math.round(totalAscent) };
+  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent };
 }
 
 // Split a multi-waypoint route into daily stages, leg by leg.
@@ -180,13 +339,6 @@ function estHours(km, ascent) {
   const hh = Math.floor(h);
   const mm = Math.round((h - hh) * 60);
   return `${hh}:${String(mm).padStart(2, "0")}`;
-}
-
-function makeFakeHotel(cityName, budget) {
-  const tier = budget === "low" ? { p: 65, name: "Pension", rate: "4.1★" }
-            : budget === "hi"  ? { p: 220, name: "Grand Hotel", rate: "4.7★" }
-            :                     { p: 130, name: "Hotel", rate: "4.5★" };
-  return { hotel: `${tier.name} ${cityName.split(",")[0]}`, price: `€${tier.p}`, rating: tier.rate };
 }
 
 // ---------- Map subcomponent ----------
@@ -233,7 +385,8 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
 
   // Init the map once.
   useEffect(() => {
-    const map = L.map(elRef.current, { zoomControl: true, attributionControl: true });
+    const map = L.map(elRef.current, { zoomControl: false, attributionControl: true });
+    L.control.zoom({ position: "topright" }).addTo(map);
     map.setView([47.6, 11.5], 8);
     mapRef.current = map;
     setTimeout(() => map.invalidateSize(), 60);
@@ -341,6 +494,31 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
   );
 }
 
+// Local-time "today" as YYYY-MM-DD — used as the min for the date picker
+// so past dates are non-selectable regardless of the user's timezone.
+function todayLocalIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Map a "YYYY-MM-DD" start date + zero-based stage index to a calendar
+// Date at local midnight (no UTC parsing — avoids off-by-one near DST/0).
+function stageDate(startIso, stageIdx) {
+  if (!startIso) return null;
+  const m = String(startIso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  d.setDate(d.getDate() + stageIdx);
+  return d;
+}
+
+const STAGE_DATE_FMT = new Intl.DateTimeFormat(undefined, {
+  weekday: "short", month: "short", day: "numeric",
+});
+
 // ---------- Tour form ----------
 function StopMarker({ kind }) {
   // kind: "start" | "mid" | "end"
@@ -357,7 +535,255 @@ function StopMarker({ kind }) {
   return <div style={{ ...base, background: "var(--bg-1)", border: "2px solid var(--accent)" }} />;
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, budget, setBudget, onPlan, onSave, saveFeedback, loading, error }) {
+// Per-input Germany validator. Debounces calls to orsGeocode and caches
+// results by query string in a module-scope Map so the user can type
+// fluidly without hammering the API. Returns:
+//   stopErrors[i]  -> null when valid/empty, error string otherwise
+//   stopChecking[i] -> true while a debounced check is in flight
+//   anyInvalid     -> at least one stop has an error (planning disabled)
+//   anyChecking    -> at least one stop is mid-flight (planning disabled)
+const GEOCODE_VALIDATION_CACHE = new Map();
+function useStopValidation(stops) {
+  const [stopErrors, setStopErrors] = useState({});
+  const [stopChecking, setStopChecking] = useState({});
+
+  useEffect(() => {
+    const key = window.__ORS_API_KEY__;
+    // Without an API key the app uses the demo route, which doesn't go
+    // through ORS — skip validation to avoid a confusing always-invalid UI.
+    if (!key) {
+      setStopErrors({});
+      setStopChecking({});
+      return;
+    }
+    const handles = [];
+    const cancellers = [];
+    const nextChecking = {};
+    stops.forEach((stop, i) => {
+      const q = String(stop || "").trim();
+      if (!q) {
+        setStopErrors((prev) => ({ ...prev, [i]: null }));
+        return;
+      }
+      if (GEOCODE_VALIDATION_CACHE.has(q)) {
+        const cached = GEOCODE_VALIDATION_CACHE.get(q);
+        setStopErrors((prev) => ({ ...prev, [i]: cached.error }));
+        return;
+      }
+      nextChecking[i] = true;
+      let cancelled = false;
+      cancellers.push(() => { cancelled = true; });
+      const handle = setTimeout(async () => {
+        try {
+          await orsGeocode(q, key);
+          GEOCODE_VALIDATION_CACHE.set(q, { error: null });
+          if (!cancelled) {
+            setStopErrors((prev) => ({ ...prev, [i]: null }));
+            setStopChecking((prev) => { const n = { ...prev }; delete n[i]; return n; });
+          }
+        } catch (e) {
+          const msg = String(e && e.message ? e.message : e);
+          GEOCODE_VALIDATION_CACHE.set(q, { error: msg });
+          if (!cancelled) {
+            setStopErrors((prev) => ({ ...prev, [i]: msg }));
+            setStopChecking((prev) => { const n = { ...prev }; delete n[i]; return n; });
+          }
+        }
+      }, 600);
+      handles.push(handle);
+    });
+    setStopChecking(nextChecking);
+    return () => {
+      handles.forEach(clearTimeout);
+      cancellers.forEach((c) => c());
+    };
+  }, [stops.join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const anyInvalid = stops.some((s, i) => s.trim() && stopErrors[i]);
+  const anyChecking = Object.values(stopChecking).some(Boolean);
+  return { stopErrors, stopChecking, anyInvalid, anyChecking };
+}
+
+// ---------- Saved Tours dropdown ----------
+//
+// A collapsible dropdown so a long list doesn't push the rest of the
+// form below the fold. Click the toggle (or press Enter / Space) to
+// open; click outside, press Esc, or pick a row to close. Arrow keys
+// navigate; Enter loads. The currently-loaded tour gets a checkmark
+// dot and an .active class so it's obvious which one is in the planner.
+// Trash uses stopPropagation so it never doubles as a load.
+function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearAll }) {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState(null); // { id, name } | null
+  // Separate state for the "Clear all" confirmation — it's not a per-row
+  // delete so it needs its own modal trigger.
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [focusIdx, setFocusIdx] = useState(-1);
+  const rootRef = useRef(null);
+  const menuRef = useRef(null);
+
+  // Click outside / Esc closes the dropdown.
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const count = (savedTours || []).length;
+  const sorted = (savedTours || []).slice().sort((a, b) => b.savedAt - a.savedAt);
+
+  const onItemKeyDown = (e, id, i) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onLoad(id);
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = Math.min(sorted.length - 1, i + 1);
+      setFocusIdx(next);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prev = Math.max(0, i - 1);
+      setFocusIdx(prev);
+    }
+  };
+
+  // Move keyboard focus when focusIdx changes.
+  useEffect(() => {
+    if (!open || focusIdx < 0 || !menuRef.current) return;
+    const items = menuRef.current.querySelectorAll("[role=option]");
+    const target = items[focusIdx];
+    if (target) target.focus();
+  }, [open, focusIdx]);
+
+  if (count === 0) {
+    return (
+      <div className="saved-dropdown">
+        <button className="saved-toggle" disabled>
+          <span>Saved tours</span>
+          <span className="saved-count">0</span>
+        </button>
+        <p className="saved-empty">No saved tours yet. Plan your first route below!</p>
+      </div>
+    );
+  }
+
+  const activeName = currentTourId
+    ? (sorted.find((t) => t.id === currentTourId) || {}).name
+    : null;
+
+  return (
+    <div className="saved-dropdown" ref={rootRef}>
+      <button
+        className="saved-toggle"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => { setOpen((v) => !v); setFocusIdx(-1); }}
+      >
+        <span className="saved-toggle-label">
+          {activeName ? activeName : "Saved tours"}
+        </span>
+        <span className="saved-count">{count}</span>
+        <span className="saved-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <ul className="saved-menu" role="listbox" ref={menuRef} aria-label="Saved tours">
+          {sorted.map((t, i) => {
+            const isActive = t.id === currentTourId;
+            return (
+              <li
+                key={t.id}
+                className={"saved-menu-item" + (isActive ? " active" : "")}
+                role="option"
+                aria-selected={isActive}
+                tabIndex={0}
+                onClick={() => { onLoad(t.id); setOpen(false); }}
+                onKeyDown={(e) => onItemKeyDown(e, t.id, i)}
+              >
+                <span className="saved-active-dot" aria-hidden="true">{isActive ? "✓" : ""}</span>
+                <div className="saved-main">
+                  <div className="saved-name">{t.name}</div>
+                  <div className="saved-stats">
+                    <span>{Math.round(t.totalKm)} km</span>
+                    <span>·</span>
+                    <span>{t.stageCount} {t.stageCount === 1 ? "day" : "days"}</span>
+                    <span>·</span>
+                    <span>↑ {Math.round(t.totalAscent)} m</span>
+                  </div>
+                </div>
+                <button
+                  className="saved-trash"
+                  onClick={(e) => { e.stopPropagation(); setConfirm({ id: t.id, name: t.name }); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); }}
+                  aria-label={`Delete ${t.name}`}
+                  title="Delete this tour"
+                >🗑</button>
+              </li>
+            );
+          })}
+          <li className="saved-menu-clear" role="presentation">
+            <button
+              type="button"
+              className="saved-clear-all"
+              onClick={(e) => { e.stopPropagation(); setConfirmClearAll(true); }}
+            >Clear all saved tours</button>
+          </li>
+        </ul>
+      )}
+      {confirm && (
+        <Modal
+          title="Delete tour?"
+          subtitle="This cannot be undone."
+          onClose={() => setConfirm(null)}
+          ariaLabel="Confirm tour delete"
+        >
+          <p style={{ margin: 0, fontSize: 14, color: "var(--fg)" }}>
+            Delete <strong>{confirm.name}</strong>?
+          </p>
+          <div className="plan-actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { onDelete(confirm.id); setConfirm(null); }}
+            >Delete</button>
+          </div>
+        </Modal>
+      )}
+      {confirmClearAll && (
+        <Modal
+          title="Clear all saved tours?"
+          subtitle="This cannot be undone."
+          onClose={() => setConfirmClearAll(false)}
+          ariaLabel="Confirm clear all tours"
+        >
+          <p style={{ margin: 0, fontSize: 14, color: "var(--fg)" }}>
+            Delete all <strong>{savedTours.length}</strong> saved tour{savedTours.length === 1 ? "" : "s"}?
+          </p>
+          <div className="plan-actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setConfirmClearAll(false)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { onClearAll(); setConfirmClearAll(false); setOpen(false); }}
+            >Delete all</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
+  const todayIso = todayLocalIso();
+  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
+  const planDisabled = loading || anyInvalid || anyChecking;
   return (
     <div className="card stack" style={{ gap: 14 }}>
       <div className="card-title">
@@ -382,8 +808,18 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
                   <input
                     value={stop}
                     onChange={(e) => setStop(i, e.target.value)}
-                    placeholder="City, country"
+                    placeholder="German city or address"
+                    aria-invalid={stopErrors[i] ? "true" : "false"}
+                    aria-describedby={stopErrors[i] ? `stop-err-${i}` : undefined}
                   />
+                  {stopErrors[i] && (
+                    <div id={`stop-err-${i}`} className="input-error">
+                      {stopErrors[i]}
+                    </div>
+                  )}
+                  {!stopErrors[i] && stopChecking[i] && (
+                    <div className="input-hint">Checking…</div>
+                  )}
                 </div>
                 {!isFirst && !isLast && (
                   <button
@@ -431,6 +867,17 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         })}
       </div>
 
+      <div className="input-field">
+        <label htmlFor="tour-start-date">Event Start Date</label>
+        <input
+          id="tour-start-date"
+          type="date"
+          min={todayIso}
+          value={startDate || ""}
+          onChange={(e) => setStartDate(e.target.value || null)}
+        />
+      </div>
+
       <div className="range-row">
         <div className="range-label">
           <span className="tag">Daily distance</span>
@@ -444,35 +891,17 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         />
       </div>
 
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-          <span className="mono faint" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".1em" }}>Budget</span>
-          <span className="mono dim" style={{ fontSize: 12 }}>{budget === "low" ? "€" : budget === "mid" ? "€€" : "€€€"}</span>
-        </div>
-        <div className="seg">
-          {[["low", "Low"], ["mid", "Mid"], ["hi", "High"]].map(([k, v]) => (
-            <button key={k} aria-pressed={budget === k} onClick={() => setBudget(k)}>{v}</button>
-          ))}
-        </div>
-        <div className="budget-visual">
-          {[0, 1, 2].map((i) => {
-            const lvl = { low: 0, mid: 1, hi: 2 }[budget];
-            const tier = budget === "low" ? "low" : budget === "mid" ? "mid" : "hi";
-            return <div key={i} className={"budget-seg " + (i <= lvl ? "on " + tier : "")} />;
-          })}
-        </div>
-      </div>
-
       <div className="btn-row">
-        <button className="btn btn-primary" onClick={onPlan} disabled={loading} style={{ flex: 1, opacity: loading ? 0.7 : 1 }}>
-          {loading ? "Planning…" : "Plan route"}
+        <button
+          className="btn btn-primary"
+          onClick={onPlan}
+          disabled={planDisabled}
+          style={{ flex: 1, opacity: planDisabled ? 0.7 : 1 }}
+          title={anyInvalid ? "Fix the highlighted addresses to enable planning" : ""}
+        >
+          {loading ? "Planning…" : anyChecking ? "Checking addresses…" : "Plan route"}
         </button>
-        <button className="btn btn-ghost" onClick={onSave}>Save</button>
       </div>
-
-      {saveFeedback && (
-        <div className="save-feedback">{saveFeedback}</div>
-      )}
 
       {error && (
         <div style={{
@@ -493,14 +922,462 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
   );
 }
 
+// Shared modal shell. Three responsibilities:
+//   1) Portal into document.body so position:fixed isn't trapped by an
+//      ancestor's transform/filter/perspective (e.g. .fade-in's keyframes).
+//   2) Body scroll-lock + Esc-to-close + autofocus close button.
+//   3) Standard head/body grid so children only render their content.
+function Modal({ title, subtitle, onClose, ariaLabel, children }) {
+  const closeBtnRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeBtnRef.current && closeBtnRef.current.focus();
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return ReactDOM.createPortal(
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label={ariaLabel || title}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h2>{title}</h2>
+            {subtitle && <p className="modal-sub">{subtitle}</p>}
+          </div>
+          <button ref={closeBtnRef} className="modal-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+        <div className="modal-body">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ---------- Destination detail modal ----------
+//
+// Lazy-loads hotels and restaurants within `radiusM` of (lat, lng) via
+// the Overpass API on mount. Reuses the existing .modal-overlay / .modal
+// CSS so it matches the glossary modal visually. The fetch result is
+// cached in sessionStorage by window.RP_DestInfo so reopening the same
+// destination doesn't hit the API again.
+function DestinationModal({ cityLabel, lat, lng, onClose }) {
+  const [radiusM, setRadiusM] = useState(5000);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [state, setState] = useState({ status: "loading", data: null, error: null });
+
+  useEffect(() => {
+    if (!window.RP_DestInfo) {
+      setState({ status: "error", data: null, error: "Destination service unavailable." });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading", data: null, error: null });
+    window.RP_DestInfo
+      .fetchDestinationInfo(lat, lng, radiusM)
+      .then((data) => { if (!cancelled) setState({ status: "ready", data, error: null }); })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg = e && e.name === "AbortError"
+          ? "The destination service took too long to respond. Please try again."
+          : "Couldn't load destination info right now — please try again in a moment.";
+        setState({ status: "error", data: null, error: msg });
+      });
+    return () => { cancelled = true; };
+  }, [lat, lng, radiusM, retryNonce]);
+
+  const cityShort = String(cityLabel || "").split(",")[0].trim() || "destination";
+  const radiusKm = Math.round(radiusM / 1000);
+
+  const subtitle = (
+    <>Hotels and restaurants within {radiusKm} km · data © <a
+      href="https://www.openstreetmap.org/copyright"
+      target="_blank" rel="noopener noreferrer"
+    >OpenStreetMap contributors</a></>
+  );
+
+  return (
+    <Modal title={cityShort} subtitle={subtitle} onClose={onClose} ariaLabel="Destination info">
+      {state.status === "loading" && <DestSkeleton />}
+      {state.status === "error" && (
+        <div className="dest-error">
+          <p>{state.error}</p>
+          <button className="btn btn-ghost" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
+        </div>
+      )}
+      {state.status === "ready" && (
+        <>
+          <DestSection
+            title="Hotels"
+            items={state.data.hotels}
+            emptyLabel={`No hotels with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
+            radiusM={radiusM}
+            onExpand={() => setRadiusM(10000)}
+          />
+          <DestSection
+            title="Restaurants"
+            items={state.data.restaurants}
+            emptyLabel={`No restaurants with website info found within ${radiusKm} km of ${cityShort}. Try checking local tourism resources.`}
+            radiusM={radiusM}
+            onExpand={() => setRadiusM(10000)}
+          />
+        </>
+      )}
+    </Modal>
+  );
+}
+
+function DestSkeleton() {
+  return (
+    <div className="dest-skeleton" aria-busy="true">
+      <div className="dest-skel-row" />
+      <div className="dest-skel-row" />
+      <div className="dest-skel-row" />
+    </div>
+  );
+}
+
+function DestSection({ title, items, emptyLabel, radiusM, onExpand }) {
+  // Final defense: even if upstream slipped, the rendered list never contains
+  // a row without a resolvable website. The count badge reflects the
+  // *rendered* count, not the raw count, so it can never mismatch.
+  const wv = window.RP_DestInfo && window.RP_DestInfo.websiteValue;
+  const visible = wv ? items.filter((it) => wv(it.tags) != null) : items;
+  if (visible.length !== items.length) {
+    try { console.log("[destInfo] DestSection", title, "trimmed", items.length - visible.length, "rows missing a website"); } catch {}
+  }
+  return (
+    <section className="dest-section">
+      <h3>{title} <span className="dest-count">{visible.length}</span></h3>
+      {visible.length === 0 ? (
+        <div className="dest-empty">
+          <p>{emptyLabel}</p>
+          {radiusM < 10000 && (
+            <button className="btn btn-ghost" onClick={onExpand}>Search wider (10 km)</button>
+          )}
+        </div>
+      ) : (
+        <ul className="dest-list">
+          {visible.map((it) => <DestRow key={it.id} item={it} />)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Renders only fields that OSM actually provided. We never invent values.
+// The destInfo filter guarantees a website tag is present — phone/email are
+// intentionally not displayed even when OSM has them.
+function DestRow({ item }) {
+  const t = item.tags || {};
+  const meta = [];
+  const kind = t.tourism || t.amenity;
+  if (kind) meta.push(prettyKind(kind));
+  if (t.cuisine)         meta.push(t.cuisine.replace(/_/g, " ").replace(/;/g, ", "));
+  if (t.stars)           meta.push(`${t.stars}★`);
+  if (t["addr:city"] || t["addr:street"]) meta.push(formatAddress(t));
+
+  // Use the same lookup destInfo uses for filtering, so a row that passed
+  // the filter always renders a link. Defensive guard: if no link comes
+  // back (shouldn't happen post-filter), don't render the row at all.
+  const website = window.RP_DestInfo && window.RP_DestInfo.websiteValue
+    ? window.RP_DestInfo.websiteValue(t)
+    : (t.website || t["contact:website"] || t.url || t["contact:url"]);
+  if (!website) return null;
+
+  return (
+    <li className="dest-row">
+      <div className="dest-main">
+        <div className="dest-name">{item.name}</div>
+        {meta.length > 0 && <div className="dest-meta">{meta.join(" · ")}</div>}
+      </div>
+      <div className="dest-links">
+        <a href={absUrl(website)} target="_blank" rel="noopener noreferrer">Website</a>
+      </div>
+    </li>
+  );
+}
+
+function prettyKind(k) {
+  return ({
+    hotel: "Hotel", guest_house: "Guest house", hostel: "Hostel",
+    motel: "Motel", bed_and_breakfast: "B&B", chalet: "Chalet",
+    apartment: "Apartment",
+    restaurant: "Restaurant", cafe: "Café", pub: "Pub", bar: "Bar",
+    bistro: "Bistro", fast_food: "Fast food",
+  }[k]) || k;
+}
+
+function formatAddress(t) {
+  const street = [t["addr:street"], t["addr:housenumber"]].filter(Boolean).join(" ");
+  const city = [t["addr:postcode"], t["addr:city"]].filter(Boolean).join(" ");
+  return [street, city].filter(Boolean).join(", ");
+}
+
+function absUrl(u) {
+  if (/^https?:\/\//i.test(u)) return u;
+  return `https://${u}`;
+}
+
+// ---------- Tour day detail (elevation profile) ----------
+//
+// Elevation math lives in src/elevation.js (window.RP_Elevation) so the
+// stage card, the tour-day modal subtitle, and the elevation chart all
+// consume the exact same numbers. See that file for the resample +
+// smooth + clamp + threshold pipeline.
+
+// Open-Meteo elevation fallback. Only used when the route geometry lacks
+// the third (elevation) component — current ORS responses include it,
+// so this is defensive. Samples coords to ~150 lat/lon pairs and makes
+// one batched GET. No API key required.
+async function fetchOpenMeteoElevation(coords, samples = 150) {
+  const step = Math.max(1, Math.floor(coords.length / samples));
+  const picked = [];
+  for (let i = 0; i < coords.length; i += step) picked.push(coords[i]);
+  if (picked[picked.length - 1] !== coords[coords.length - 1]) picked.push(coords[coords.length - 1]);
+  const lats = picked.map((c) => c[1]).join(",");
+  const lngs = picked.map((c) => c[0]).join(",");
+  const url = `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Elevation API ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j.elevation) || j.elevation.length !== picked.length) {
+    throw new Error("Elevation API returned unexpected shape");
+  }
+  // Splice the elevations back as a [lng, lat, ele] series spread across
+  // the same total distance as the input.
+  return picked.map((c, i) => [c[0], c[1], j.elevation[i]]);
+}
+
+// In-memory cache for per-stage profiles. Keyed by stage indices so
+// reopening the same day's modal is instant.
+const ELEV_CACHE = new Map();
+function elevCacheKey(stage) {
+  return `${stage && stage.startIdx}-${stage && stage.endIdx}-${stage && stage.km}`;
+}
+
+function Section({ title, children }) {
+  return (
+    <section className="dest-section tour-day-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function ElevationChart({ samples, height = 220 }) {
+  const wrapRef = useRef(null);
+  const [tip, setTip] = useState(null);   // {x, km, ele}
+  const [w, setW] = useState(560);
+
+  useEffect(() => {
+    if (!wrapRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const cw = entries[0].contentRect.width;
+      if (cw > 0) setW(cw);
+    });
+    ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  if (!samples || samples.length < 2) {
+    return <div className="elev-empty">Elevation data unavailable for this stage.</div>;
+  }
+
+  const pad = { top: 14, right: 14, bottom: 26, left: 40 };
+  const innerW = Math.max(80, w - pad.left - pad.right);
+  const innerH = Math.max(80, height - pad.top - pad.bottom);
+
+  const xs = samples.map((s) => s.km);
+  const ys = samples.map((s) => s.ele);
+  const xMin = xs[0], xMax = xs[xs.length - 1];
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  // Pad vertical range so flat profiles aren't a hairline.
+  if (yMax - yMin < 50) { yMax += 25; yMin -= 25; }
+
+  const sx = (km) => pad.left + ((km - xMin) / (xMax - xMin)) * innerW;
+  const sy = (ele) => pad.top + (1 - (ele - yMin) / (yMax - yMin)) * innerH;
+
+  // Build SVG path: line for the curve, separate filled area to bottom.
+  const linePath = samples.map((s, i) => `${i === 0 ? "M" : "L"}${sx(s.km).toFixed(2)},${sy(s.ele).toFixed(2)}`).join("");
+  const areaPath = linePath
+    + `L${sx(xMax).toFixed(2)},${(pad.top + innerH).toFixed(2)}`
+    + `L${sx(xMin).toFixed(2)},${(pad.top + innerH).toFixed(2)}Z`;
+
+  // Y gridlines: 4 even ticks, rounded to a nice 10m/50m/100m increment.
+  const niceStep = (range) => {
+    const raw = range / 4;
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / pow;
+    const step = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+    return step * pow;
+  };
+  const step = niceStep(yMax - yMin);
+  const yTicks = [];
+  for (let t = Math.ceil(yMin / step) * step; t <= yMax; t += step) yTicks.push(t);
+
+  const dense = w >= 400;
+  const xTickCount = dense ? 5 : 3;
+  const xTicks = Array.from({ length: xTickCount }, (_, i) => xMin + ((xMax - xMin) * i) / (xTickCount - 1));
+
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const xPx = ((e.clientX - rect.left) / rect.width) * w;
+    if (xPx < pad.left || xPx > pad.left + innerW) { setTip(null); return; }
+    const km = xMin + ((xPx - pad.left) / innerW) * (xMax - xMin);
+    // Find nearest sample
+    let lo = 0, hi = samples.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; (samples[m].km < km ? lo = m : hi = m); }
+    const pick = Math.abs(samples[lo].km - km) < Math.abs(samples[hi].km - km) ? samples[lo] : samples[hi];
+    setTip({ x: sx(pick.km), y: sy(pick.ele), km: pick.km, ele: pick.ele });
+  };
+  const onLeave = () => setTip(null);
+
+  return (
+    <div className="elev-chart-wrap" ref={wrapRef}>
+      <svg
+        className="elev-chart"
+        viewBox={`0 0 ${w} ${height}`}
+        preserveAspectRatio="none"
+        width="100%" height={height}
+        onPointerMove={onMove} onPointerLeave={onLeave}
+        role="img" aria-label="Elevation profile"
+      >
+        {/* y gridlines + labels */}
+        {yTicks.map((t) => (
+          <g key={`y${t}`}>
+            <line x1={pad.left} x2={pad.left + innerW} y1={sy(t)} y2={sy(t)} className="elev-grid" />
+            <text x={pad.left - 6} y={sy(t)} dy="0.32em" className="elev-axis" textAnchor="end">{Math.round(t)} m</text>
+          </g>
+        ))}
+        {/* area + line */}
+        <path d={areaPath} className="elev-area" />
+        <path d={linePath} className="elev-line" />
+        {/* x ticks */}
+        {xTicks.map((t, i) => (
+          <text key={`x${i}`} x={sx(t)} y={height - 8} className="elev-axis" textAnchor="middle">
+            {t.toFixed(t > 100 ? 0 : 1)} km
+          </text>
+        ))}
+        {/* hover guide */}
+        {tip && (
+          <>
+            <line x1={tip.x} x2={tip.x} y1={pad.top} y2={pad.top + innerH} className="elev-guide" />
+            <circle cx={tip.x} cy={tip.y} r="4" className="elev-dot" />
+          </>
+        )}
+      </svg>
+      {tip && (
+        <div className="elev-tip" style={{ left: `${(tip.x / w) * 100}%` }}>
+          {tip.km.toFixed(1)} km · {Math.round(tip.ele)} m
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TourDayModal({ stage, stageIdx, coordsSlice, onClose }) {
+  const [state, setState] = useState({ status: "loading", profile: null, error: null });
+  const [retryNonce, setRetryNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading", profile: null, error: null });
+
+    // Prefer the profile already computed at route-build time so the
+    // numbers shown here are byte-identical to the tour card.
+    if (stage && stage.elevationProfile && stage.elevationProfile.hasElevation) {
+      setState({ status: "ready", profile: stage.elevationProfile, error: null });
+      return;
+    }
+
+    // Cache hit (older tour state restored from localStorage)?
+    const key = elevCacheKey(stage);
+    if (ELEV_CACHE.has(key)) {
+      setState({ status: "ready", profile: ELEV_CACHE.get(key), error: null });
+      return;
+    }
+
+    const compute = (coords) => window.RP_Elevation.computeProfile(coords);
+
+    const run = async () => {
+      try {
+        let profile = compute(coordsSlice);
+        if (!profile.hasElevation && Array.isArray(coordsSlice) && coordsSlice.length >= 2) {
+          // Defensive fallback if a future route source omits elevation.
+          const enriched = await fetchOpenMeteoElevation(coordsSlice);
+          profile = compute(enriched);
+        }
+        if (cancelled) return;
+        ELEV_CACHE.set(key, profile);
+        setState({ status: "ready", profile, error: null });
+      } catch (e) {
+        if (cancelled) return;
+        setState({
+          status: "error", profile: null,
+          error: "Couldn't load elevation profile — please try again.",
+        });
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [stage, coordsSlice, retryNonce]);
+
+  const dayLabel = `Day ${stageIdx + 1} — ${cityShort(stage.from)} → ${cityShort(stage.to)}`;
+  const subtitle = state.profile
+    ? `${stage.km} km · ↑ ${state.profile.totalAscent} m · ↓ ${state.profile.totalDescent} m`
+    : `${stage.km} km · ↑ ${stage.ascent || 0} m`;
+
+  return (
+    <Modal title={dayLabel} subtitle={subtitle} onClose={onClose} ariaLabel="Tour day details">
+      <Section title="Elevation Profile">
+        {state.status === "loading" && <div className="elev-skeleton" aria-busy="true" />}
+        {state.status === "error" && (
+          <div className="dest-error">
+            <p>{state.error}</p>
+            <button className="btn btn-ghost" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
+          </div>
+        )}
+        {state.status === "ready" && (
+          <>
+            <ElevationChart samples={state.profile.samples} />
+            <div className="elev-stats">
+              <div><span className="lbl">Ascent</span><span className="big">{state.profile.totalAscent} m</span></div>
+              <div><span className="lbl">Descent</span><span className="big">{state.profile.totalDescent} m</span></div>
+              <div><span className="lbl">Highest</span><span className="big">{state.profile.max} m</span></div>
+              <div><span className="lbl">Lowest</span><span className="big">{state.profile.min} m</span></div>
+            </div>
+          </>
+        )}
+      </Section>
+      {/* Future sections (weather, POIs along route, road surface) can
+          slot in here as additional <Section> blocks. */}
+    </Modal>
+  );
+}
+
+function cityShort(label) {
+  return String(label || "").split(",")[0].trim() || "?";
+}
+
 // ---------- Itinerary list ----------
-function Itinerary({ tour, activeStage, setActiveStage, budget, units }) {
+function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geometry, onOpenDest, onOpenDay }) {
   const { fmtKm, fmtElev } = window.RP_SHARED;
   return (
     <div className="itinerary">
       {(tour.stages || []).map((s, i) => {
-        const fake = s.hotel ? null : makeFakeHotel(s.to, budget);
-        const hotel = s.hotel ? { hotel: s.hotel, price: s.price, rating: s.rating } : fake;
+        const d = stageDate(startDate, i);
+        const dateLabel = d ? STAGE_DATE_FMT.format(d) : null;
+        const coord = (geometry && s.endIdx != null) ? geometry[s.endIdx] : null;
+        const hasCoord = Array.isArray(coord) && coord.length >= 2
+          && Number.isFinite(coord[0]) && Number.isFinite(coord[1]);
+        const hasStageGeometry = geometry && s.startIdx != null && s.endIdx != null
+          && s.endIdx > s.startIdx;
         return (
           <div
             key={i}
@@ -513,28 +1390,45 @@ function Itinerary({ tour, activeStage, setActiveStage, budget, units }) {
                 <span>{s.from}</span>
                 <span className="arrow">→</span>
                 <span>{s.to}</span>
+                {dateLabel && <span className="stage-date">{dateLabel}</span>}
               </div>
               <div className="stage-stats">
                 <span><strong>{fmtKm(s.km, units)}</strong></span>
                 <span><strong>↑ {fmtElev(s.ascent, units)}</strong></span>
                 <span><strong>{s.hours}</strong> hrs</span>
               </div>
-              {hotel && (
-                <div className="hotel-chip">
-                  <div className="hotel-thumb" />
-                  <div className="hotel-body">
-                    <div className="hotel-name">{hotel.hotel}</div>
-                    <div className="hotel-meta">
-                      <span>{hotel.rating}</span>
-                      <span>{s.to.split(",")[0]}</span>
-                    </div>
-                  </div>
-                  <div className="hotel-price">
-                    {hotel.price}
-                    <em>/ night</em>
-                  </div>
-                </div>
-              )}
+              <div className="stage-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost stage-day-btn"
+                  disabled={!hasStageGeometry}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasStageGeometry) return;
+                    onOpenDay({ stageIdx: i });
+                  }}
+                  title={hasStageGeometry ? "" : "Route geometry not available for this stage"}
+                >
+                  Find out more about your tour day
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost stage-dest-btn"
+                  disabled={!hasCoord}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasCoord) return;
+                    onOpenDest({
+                      cityLabel: s.to,
+                      lat: coord[1],
+                      lng: coord[0],
+                    });
+                  }}
+                  title={hasCoord ? "" : "Coordinates not available for this stage"}
+                >
+                  Find out more about your destination
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -549,10 +1443,6 @@ function SummaryBar({ tour, units }) {
   const totalKm = tour.totalKm ?? (tour.stages || []).reduce((a, b) => a + b.km, 0);
   const totalAsc = tour.totalAscent ?? (tour.stages || []).reduce((a, b) => a + b.ascent, 0);
   const days = (tour.stages || []).length;
-  const cost = (tour.stages || []).reduce((sum, s) => {
-    const p = s.price ? +String(s.price).replace(/[^\d]/g, "") : 0;
-    return sum + p;
-  }, 0);
 
   return (
     <div className="summary-bar">
@@ -568,54 +1458,23 @@ function SummaryBar({ tour, units }) {
         <span className="lbl">Ascent</span>
         <span className="big">{fmtElev(totalAsc, units)}</span>
       </div>
-      <div className="summary-cell">
-        <span className="lbl">Lodging</span>
-        <span className="big">€{cost}</span>
-      </div>
     </div>
   );
 }
 
-// ---------- localStorage persistence ----------
-//
-// Tour Planner state is local to this component and not shared. The "Save"
-// button writes a lightweight record (no geometry) to ridePrep:tours so the
-// Training page can read available tours without depending on component state.
-//
-// Saved record shape:
-//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
-//
-// Tours are identified by from+to — saving the same route overwrites the
-// previous entry with the same stable id, keeping Training's tourId reference
-// valid across re-saves.
-function saveTourToStorage(tour) {
-  try {
-    const raw = window.localStorage.getItem("ridePrep:tours");
-    const list = raw ? JSON.parse(raw) : [];
-    const existingIdx = list.findIndex((t) => t.from === tour.from && t.to === tour.to);
-    const entry = {
-      id: existingIdx >= 0 ? list[existingIdx].id : `tour_${Date.now()}`,
-      name: `${tour.from} → ${tour.to}`,
-      from: tour.from,
-      to: tour.to,
-      totalKm: tour.totalKm || 0,
-      totalAscent: tour.totalAscent || 0,
-      stageCount: (tour.stages || []).length,
-      savedAt: Date.now(),
-    };
-    if (existingIdx >= 0) list[existingIdx] = entry;
-    else list.push(entry);
-    window.localStorage.setItem("ridePrep:tours", JSON.stringify(list));
-    return entry.id;
-  } catch { return null; }
-}
+// The lightweight saveTourToStorage that pre-existed here has been
+// replaced by saveTour() at the top of this file, which writes both the
+// index entry and the full per-tour blob (so Saved Tours can restore a
+// trip without re-routing). Auto-save is wired in planRoute below.
 
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
-  // Load any previously-persisted state once on mount. Subsequent renders
-  // reuse the same object via useMemo so the lazy useState initialisers
-  // below all see the same snapshot.
-  const saved = useMemo(() => loadFullTourState(), []);
+  // Load the most recently saved tour on mount. saveTour() writes both
+  // the lightweight index and a full per-tour blob, so a returning user
+  // lands on their last planned trip with route, stages, and chart all
+  // intact (no re-routing required). Legacy ridePrep:tourState payloads
+  // are migrated into the new schema on first read.
+  const saved = useMemo(() => loadMostRecentTour(), []);
   const { DEMO_TOUR: _DT } = window.RP_DATA;
   const defaultStops = [_DT.from, _DT.to];
 
@@ -623,10 +1482,16 @@ function Tour({ tweaks }) {
     (saved && Array.isArray(saved.stops) && saved.stops.length >= 2) ? saved.stops : defaultStops
   );
   const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
-  const [budget, setBudget] = useState(() => (saved && saved.budget) || "mid");
+  const [startDate, setStartDate] = useState(() => {
+    const persisted = saved && saved.startDate;
+    if (!persisted) return null;
+    return persisted < todayLocalIso() ? null : persisted;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeStage, setActiveStage] = useState(0);
+  const [destView, setDestView] = useState(null);   // { cityLabel, lat, lng } | null
+  const [dayView, setDayView] = useState(null);     // { stageIdx } | null
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
@@ -654,11 +1519,16 @@ function Tour({ tweaks }) {
   const initialDemo = useCallback(() => {
     const wps = DEMO_TOUR.waypoints;
     const geom = wps.map((w) => [w.lng, w.lat, 0]);
-    const stages = DEMO_TOUR.stages.map((s, i) => ({
-      ...s,
-      startIdx: i,
-      endIdx: i + 1,
-    }));
+    const stages = DEMO_TOUR.stages.map((s, i) => {
+      const end = wps[i + 1] || wps[wps.length - 1];
+      return {
+        ...s,
+        startIdx: i,
+        endIdx: i + 1,
+        lat: end ? end.lat : null,
+        lng: end ? end.lng : null,
+      };
+    });
     return {
       from: DEMO_TOUR.from,
       to: DEMO_TOUR.to,
@@ -671,28 +1541,85 @@ function Tour({ tweaks }) {
 
   const [tour, setTour] = useState(() => (saved && saved.tour) || initialDemo());
   const [geometry, setGeometry] = useState(() => (saved && saved.geometry) || initialDemo()._geom);
-  const [saveFeedback, setSaveFeedback] = useState(null);
+  // Index of saved tours mirrored in component state so the Saved Tours
+  // panel re-renders when an auto-save lands or a delete happens.
+  const [savedTours, setSavedTours] = useState(() => readToursIndex());
+  // Banner shown when a localStorage write hits the browser quota.
+  // null when storage is fine; a string message when not. Cleared by
+  // the user dismissing it or by the next successful save.
+  const [storageBanner, setStorageBanner] = useState(null);
 
-  // Auto-persist the full state on any change so tab switches and reloads
-  // restore the user's tour. Also write the lightweight ridePrep:tours record
-  // so Training picks up edits without an explicit Save click.
+  // Cross-tab live updates: another tab / window deleting a tour or
+  // saving one should reflect here without a manual reload.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        TOUR_STATE_KEY,
-        JSON.stringify({ tour, geometry, stops, dailyKm, budget })
-      );
-    } catch {}
-    if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
-      saveTourToStorage(tour);
-    }
-  }, [tour, geometry, stops, dailyKm, budget]);
+    const onStorage = (e) => {
+      if (e.key === TOURS_INDEX_KEY) setSavedTours(readToursIndex());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
-  const handleSave = useCallback(() => {
-    const id = saveTourToStorage(tour);
-    setSaveFeedback(id ? "Tour saved!" : "Save failed");
-    setTimeout(() => setSaveFeedback(null), 2500);
-  }, [tour]);
+  const canDownloadIcs = !!startDate && !!tour && Array.isArray(tour.stages) && tour.stages.length > 0;
+
+  const handleDownloadIcs = useCallback(() => {
+    if (!canDownloadIcs || !window.RP_IcsExport) return;
+    const fromS = (tour.from || "tour").split(",")[0].trim().replace(/\s+/g, "-");
+    const toS = (tour.to || "end").split(",")[0].trim().replace(/\s+/g, "-");
+    const filename = `RidePrep-Tour-${fromS}-to-${toS}-${startDate}.ics`;
+    window.RP_IcsExport.downloadTourIcs(tour, startDate, filename);
+  }, [canDownloadIcs, tour, startDate]);
+
+  // Saved Tours actions exposed to the panel.
+  // Two paths:
+  //  - happy path: the per-tour blob is present → fully restore stops,
+  //    dailyKm, startDate, tour, geometry without re-routing.
+  //  - blob-less fallback: older index entries had no blob (the legacy
+  //    saveTourToStorage never wrote one). Restore at least the stops
+  //    and startDate so clicking the row isn't a dead click — the user
+  //    can hit Plan route to regenerate geometry.
+  const handleLoadTour = useCallback((id) => {
+    const blob = readTourBlob(id);
+    if (blob && blob.tour) {
+      if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
+      if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
+      setStartDate(blob.startDate || null);
+      setTour(blob.tour);
+      setGeometry(blob.geometry || []);
+      setActiveStage(0);
+      return;
+    }
+    const entry = readToursIndex().find((t) => t.id === id);
+    if (!entry) return;
+    setStops([entry.from, entry.to]);
+    setStartDate(entry.startDate || null);
+    setActiveStage(0);
+  }, []);
+  const handleDeleteTour = useCallback((id) => {
+    // If we're deleting the currently-loaded tour, reset the planner so
+    // the map / itinerary / summary bar don't keep showing stale data.
+    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate);
+    deleteTour(id);
+    if (id === currentId) {
+      const demo = initialDemo();
+      setTour({ ...demo, _geom: undefined });
+      setGeometry(demo._geom);
+      setStops(defaultStops);
+      setActiveStage(0);
+    }
+    setSavedTours(readToursIndex());
+  }, [tour, startDate, initialDemo, defaultStops]);
+
+  const handleClearAllTours = useCallback(() => {
+    clearAllSavedTours();
+    setSavedTours([]);
+    setStorageBanner(null);
+    const demo = initialDemo();
+    setTour({ ...demo, _geom: undefined });
+    setGeometry(demo._geom);
+    setStops(defaultStops);
+    setStartDate(null);
+    setActiveStage(0);
+  }, [initialDemo, defaultStops]);
 
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
@@ -725,12 +1652,16 @@ function Tour({ tweaks }) {
       }
 
       const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
-      itin.stages = itin.stages.map((s) => ({
-        ...s,
-        ...makeFakeHotel(s.to, budget),
-      }));
+      itin.stages = itin.stages.map((s) => {
+        const c = coords[s.endIdx];
+        return {
+          ...s,
+          lat: c ? c[1] : null,
+          lng: c ? c[0] : null,
+        };
+      });
 
-      setTour({
+      const nextTour = {
         from: labels[0],
         to: labels[labels.length - 1],
         stops: labels,
@@ -739,28 +1670,57 @@ function Tour({ tweaks }) {
         totalAscent: itin.totalAscent,
         meters: summary && summary.distance,
         seconds: summary && summary.duration,
-      });
+      };
+      setTour(nextTour);
       setGeometry(coords);
       setActiveStage(0);
+      // Auto-save: silent on success, surfaces a banner on quota
+      // failure so the user knows storage is full.
+      const saveResult = saveTour({
+        tour: nextTour,
+        geometry: coords,
+        stops: labels,
+        dailyKm,
+        startDate,
+      });
+      if (saveResult && saveResult.reason === "quota") {
+        setStorageBanner("Storage limit reached. Delete some saved tours to make room.");
+      }
+      setSavedTours(readToursIndex());
     } catch (e) {
       setError(String(e.message || e));
     } finally {
       setLoading(false);
     }
-  }, [stops, dailyKm, budget, initialDemo]);
+  }, [stops, dailyKm, startDate, initialDemo]);
 
   return (
     <div className="fade-in">
       <SummaryBar tour={tour} units={tweaks.units} />
       <div className="tour-layout">
         <div className="stack" style={{ gap: 16 }}>
+          <SavedToursPanel
+            savedTours={savedTours}
+            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate)}
+            onLoad={handleLoadTour}
+            onDelete={handleDeleteTour}
+            onClearAll={handleClearAllTours}
+          />
+          {storageBanner && (
+            <div className="storage-banner" role="alert">
+              <span>{storageBanner}</span>
+              <button
+                className="storage-banner-close"
+                onClick={() => setStorageBanner(null)}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
           <TourForm
             stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
-            budget={budget} setBudget={setBudget}
+            startDate={startDate} setStartDate={setStartDate}
             onPlan={planRoute}
-            onSave={handleSave}
-            saveFeedback={saveFeedback}
             loading={loading}
             error={error}
           />
@@ -777,14 +1737,55 @@ function Tour({ tweaks }) {
             tour={tour}
             activeStage={activeStage}
             setActiveStage={setActiveStage}
-            budget={budget}
             units={tweaks.units}
+            startDate={startDate}
+            geometry={geometry}
+            onOpenDest={setDestView}
+            onOpenDay={setDayView}
           />
+          <div className="plan-actions">
+            <button
+              className="btn btn-ghost download-ics-btn"
+              onClick={handleDownloadIcs}
+              disabled={!canDownloadIcs}
+              title={
+                !startDate ? "Pick an Event Start Date to enable calendar export"
+                : !tour || !tour.stages || tour.stages.length === 0 ? "Plan a route first"
+                : "Import into Apple Calendar, Google Calendar, Outlook, etc."
+              }
+            >
+              <span aria-hidden="true">⬇</span> Add Tour to Calendar (.ics)
+            </button>
+          </div>
         </div>
       </div>
+      {destView && (
+        <DestinationModal
+          cityLabel={destView.cityLabel}
+          lat={destView.lat}
+          lng={destView.lng}
+          onClose={() => setDestView(null)}
+        />
+      )}
+      {dayView && tour && tour.stages && tour.stages[dayView.stageIdx] && (
+        <TourDayModal
+          stage={tour.stages[dayView.stageIdx]}
+          stageIdx={dayView.stageIdx}
+          coordsSlice={geometry && tour.stages[dayView.stageIdx].endIdx != null
+            ? geometry.slice(
+                tour.stages[dayView.stageIdx].startIdx,
+                tour.stages[dayView.stageIdx].endIdx + 1
+              )
+            : []}
+          onClose={() => setDayView(null)}
+        />
+      )}
     </div>
   );
 }
 
 window.RP_Tour = Tour;
+// window.RP_TourStorage is provided by src/tourStorage.js (loaded
+// before this file), so other tabs (Weather) and migrations share one
+// API surface. We don't re-export anything here to avoid clobbering it.
 })();

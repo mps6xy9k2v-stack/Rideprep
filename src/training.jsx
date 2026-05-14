@@ -104,7 +104,6 @@ const GLOSSARY = [
 
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
-const TOURS_KEY  = "ridePrep:tours";
 
 const DEFAULT_INPUTS = {
   eventSource: null,
@@ -121,16 +120,47 @@ const DEFAULT_INPUTS = {
 //
 // Tours are local React state in src/tour.jsx (a single object, not an array;
 // no name; no event date; no per-stage dates). They are not persisted by
-// default. The Tour Planner's "Save" button now writes a lightweight record
-// to localStorage under TOURS_KEY:
+// default. The Tour Planner auto-saves into the shared RP_TourStorage
+// module, which Training subscribes to via useSavedTours() below.
 //
 //   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
 //
-// Training reads this list to populate the tour selector. The id is stable
-// per from+to pair so re-saving the same route updates the existing entry.
+// Single source of truth for the saved-tour list. Everything goes through
+// window.RP_TourStorage (provided by src/tourStorage.js), which owns the
+// versioned localStorage keys (rideprep:savedTours:v1 etc.) and survives
+// schema migrations transparently. Falls back to [] when the storage
+// module isn't loaded yet (initial render before babel-standalone has
+// evaluated the sibling script — rare but possible).
 function loadSavedTours() {
-  const arr = loadJSON(TOURS_KEY);
-  return Array.isArray(arr) ? arr : [];
+  if (window.RP_TourStorage && typeof window.RP_TourStorage.loadSavedTours === "function") {
+    return window.RP_TourStorage.loadSavedTours();
+  }
+  return [];
+}
+
+// React hook: subscribes to the storage layer's notifications so the
+// Training tour selector updates live when a tour is saved or deleted
+// on the Tour Planner tab — no reload required.
+//
+//   storage event       — fires on cross-tab/window changes.
+//   rideprep:tour-saved — fires in the same tab when saveTour / deleteTour
+//                         / clearAllTours mutates the index.
+function useSavedTours() {
+  const [tours, setTours] = useState(loadSavedTours);
+  useEffect(() => {
+    const refresh = () => setTours(loadSavedTours());
+    window.addEventListener("storage", refresh);
+    window.addEventListener("rideprep:tour-saved", refresh);
+    // Pick up the case where RP_TourStorage finished loading after
+    // useState's initial snapshot (initial value was an empty []).
+    if (tours.length === 0) refresh();
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("rideprep:tour-saved", refresh);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return tours;
 }
 
 function loadJSON(key) {
@@ -225,7 +255,18 @@ function EventSetupCard({ inputs, setInputs, savedTours }) {
               <select
                 className="plan-select"
                 value={tourEvent.tourId || ""}
-                onChange={(e) => setTour({ tourId: e.target.value || null })}
+                onChange={(e) => {
+                  const newId = e.target.value || null;
+                  // Pre-fill the training-target date from the tour's
+                  // Event Start Date so the user doesn't have to type
+                  // it again. Falls back to the existing value (or
+                  // null) when the tour has no date or "" is picked.
+                  const picked = newId ? savedTours.find((t) => t.id === newId) : null;
+                  const nextDate = picked && picked.startDate
+                    ? picked.startDate
+                    : tourEvent.date || null;
+                  setTour({ tourId: newId, date: nextDate });
+                }}
               >
                 <option value="">Select a tour…</option>
                 {savedTours.map((t) => (
@@ -479,6 +520,13 @@ const PHASE_COLOR_VAR = {
 
 const EVENT_LABEL = { race: "Race", sportive: "Sportive", longtour: "Long Tour" };
 
+// Prefer the highest-TSS week within the Peak phase; fall back to overall max.
+function pickPeakWeek(weeks) {
+  const inPeakPhase = weeks.filter((w) => w.phase === "Peak");
+  const pool = inPeakPhase.length > 0 ? inPeakPhase : weeks;
+  return pool.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+}
+
 function zoneColor(zoneId) {
   const z = window.RP_DATA.ZONES.find((x) => x.id === zoneId);
   return z ? z.color : "var(--accent)";
@@ -539,7 +587,7 @@ function EmptyPlanState() {
 function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
-  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const peak = pickPeakWeek(weeks);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
@@ -1061,7 +1109,7 @@ function PrintView({ plan, planInputs }) {
   const eventLabel = EVENT_LABEL[meta.eventType] || meta.eventType;
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
-  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const peak = pickPeakWeek(weeks);
   const generatedStr = formatPrintDate(new Date().toISOString().split("T")[0]);
   const phaseLine = phases
     .map((p) => p.startWeek === p.endWeek
@@ -1217,10 +1265,9 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     const saved = loadJSON(INPUTS_KEY);
     return saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
   });
-  // Loaded once on mount. Training is conditionally rendered in app.jsx, so
-  // it remounts on every tab switch — that re-reads localStorage and picks up
-  // tours saved while the user was on the Tour Planner tab.
-  const [savedTours] = useState(loadSavedTours);
+  // Live-subscribed to RP_TourStorage so tours saved or deleted from the
+  // Tour Planner tab appear here immediately — no reload needed.
+  const savedTours = useSavedTours();
   const [generatedPlan, setGeneratedPlan] = useState(initialPlan);
   const [generationError, setGenerationError] = useState(null);
   // null | "created" | "updated" — drives the transient post-generate banner.
@@ -1335,6 +1382,12 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     window.print();
   }
 
+  function handleDownloadIcs() {
+    if (!generatedPlan || !window.RP_IcsExport) return;
+    const filename = `${buildPlanFilename(generatedPlan)}.ics`;
+    window.RP_IcsExport.downloadIcs(generatedPlan, planStartDate(), filename);
+  }
+
   const currentWeek = generatedPlan ? generatedPlan.weeks[selectedWeek - 1] : null;
 
   return (
@@ -1409,12 +1462,21 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
               plan={generatedPlan}
               currentWeekPhase={currentWeek && currentWeek.phase}
             />
-            <button
-              className="btn btn-ghost download-pdf-btn"
-              onClick={handleDownloadPdf}
-            >
-              <span aria-hidden="true">⬇</span> Download as PDF
-            </button>
+            <div className="plan-actions">
+              <button
+                className="btn btn-ghost download-pdf-btn"
+                onClick={handleDownloadPdf}
+              >
+                <span aria-hidden="true">⬇</span> Download as PDF
+              </button>
+              <button
+                className="btn btn-ghost download-ics-btn"
+                onClick={handleDownloadIcs}
+                title="Import into Apple Calendar, Google Calendar, Outlook, etc."
+              >
+                <span aria-hidden="true">⬇</span> Add to Calendar (.ics)
+              </button>
+            </div>
             <PrintView plan={generatedPlan} planInputs={planInputs} />
           </>
         )}
