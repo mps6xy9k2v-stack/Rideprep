@@ -897,33 +897,87 @@ input[type="range"]::-moz-range-thumb {
   to   { background-position: -200% 0; }
 }
 
-/* ========== SAVED TOURS PANEL ========== */
-.saved-list {
-  list-style: none; padding: 0; margin: 0;
-  display: grid; gap: 6px;
-  max-height: 280px;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+/* ========== SAVED TOURS DROPDOWN ========== */
+.saved-dropdown {
+  position: relative;
 }
-.saved-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px;
-  align-items: stretch;
-}
-.saved-load {
-  display: grid;
-  gap: 2px;
-  padding: 10px 12px;
-  text-align: left;
-  background: var(--bg);
+.saved-toggle {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  text-align: left;
+  font-size: 14px;
+  color: var(--fg);
   transition: all .15s;
   cursor: pointer;
-  min-width: 0;
 }
-.saved-load:hover { border-color: var(--accent); }
+.saved-toggle:hover:not(:disabled) { border-color: var(--accent); }
+.saved-toggle:disabled { opacity: 0.6; cursor: default; }
+.saved-toggle-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.saved-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.saved-caret {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+.saved-menu {
+  list-style: none; padding: 4px; margin: 4px 0 0;
+  position: absolute;
+  top: 100%; left: 0; right: 0;
+  z-index: 50;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  max-height: 320px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: grid;
+  gap: 2px;
+}
+.saved-menu-item {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+  transition: background .12s;
+  outline: none;
+}
+.saved-menu-item:hover,
+.saved-menu-item:focus-visible {
+  background: var(--bg);
+}
+.saved-menu-item.active {
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+}
+.saved-active-dot {
+  width: 18px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+}
+.saved-main { min-width: 0; }
 .saved-name {
   font-size: 14px;
   font-weight: 500;
@@ -938,12 +992,13 @@ input[type="range"]::-moz-range-thumb {
   color: var(--fg-dim);
 }
 .saved-trash {
-  width: 38px;
+  width: 30px; height: 30px;
   border: 1px solid var(--line);
   background: var(--bg);
-  border-radius: var(--radius);
+  border-radius: 999px;
   color: var(--fg-dim);
-  font-size: 16px;
+  font-size: 14px;
+  line-height: 1;
   transition: all .15s;
 }
 .saved-trash:hover {
@@ -951,13 +1006,22 @@ input[type="range"]::-moz-range-thumb {
   border-color: color-mix(in oklch, var(--danger) 60%, transparent);
 }
 .saved-empty {
-  margin: 0;
+  margin: 8px 0 0;
   font-size: 13px;
   color: var(--fg-dim);
   padding: 12px;
   border: 1px dashed var(--line);
   border-radius: var(--radius);
   text-align: center;
+}
+@media (max-width: 640px) {
+  .saved-menu {
+    position: fixed;
+    left: 0; right: 0; top: auto;
+    margin: 0;
+    border-radius: var(--radius) var(--radius) 0 0;
+    max-height: 60vh;
+  }
 }
 
 /* ========== TOUR DAY MODAL (elevation profile) ========== */

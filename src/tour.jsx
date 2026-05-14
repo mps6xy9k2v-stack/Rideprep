@@ -27,8 +27,16 @@ function slugify(s) {
     .slice(0, 32) || "x";
 }
 
+// Strip region/country suffix from a geocoded address so the same
+// logical place — "Bad Laer" vs "Bad Laer, NI, Deutschland" vs
+// "Bad Laer, Lower Saxony, Germany" — produces a single stable ID.
+// Display names keep the full geocoded label; only the ID uses this.
+function normalizeAddressForId(s) {
+  return String(s || "").split(",")[0].trim().toLowerCase();
+}
+
 function tourIdFor(from, to, startDate) {
-  return `${slugify(from)}_${slugify(to)}_${startDate || "nodate"}`;
+  return `${slugify(normalizeAddressForId(from))}_${slugify(normalizeAddressForId(to))}_${startDate || "nodate"}`;
 }
 
 function readToursIndex() {
@@ -129,10 +137,75 @@ function migrateLegacyTourState() {
   } catch {}
 }
 
+// Earlier versions of this file generated tour IDs from either a
+// timestamp (`tour_<ts>`) or a slug that included the full geocoded
+// suffix ("bad-laer-ni-deutschland"). The same logical trip therefore
+// ended up under multiple IDs in the index — visible in the Saved
+// Tours dropdown as duplicates with slightly different names.
+//
+// This pass:
+//   1) re-derives each index entry's ID from normalized from+to+date
+//   2) renames the per-tour blob to the new key
+//   3) collapses same-ID entries to the most recently saved one,
+//      preferring the entry that actually has a blob.
+//
+// Gated by a version key so we only run once per browser.
+const TOURS_DEDUPE_VERSION = "v2";
+const TOURS_DEDUPE_FLAG_KEY = "ridePrep:tours:dedupe";
+
+function migrateAndDedupeTours() {
+  try {
+    if (window.localStorage.getItem(TOURS_DEDUPE_FLAG_KEY) === TOURS_DEDUPE_VERSION) return;
+    const list = readToursIndex();
+    if (list.length === 0) {
+      window.localStorage.setItem(TOURS_DEDUPE_FLAG_KEY, TOURS_DEDUPE_VERSION);
+      return;
+    }
+    const byNewId = new Map(); // newId -> { meta, blob, oldIds:Set }
+    for (const entry of list) {
+      const newId = tourIdFor(entry.from, entry.to, entry.startDate);
+      const oldBlob = readTourBlob(entry.id);
+      const slot = byNewId.get(newId);
+      const candidate = { meta: { ...entry, id: newId }, blob: oldBlob, oldIds: new Set([entry.id]) };
+      if (!slot) {
+        byNewId.set(newId, candidate);
+        continue;
+      }
+      // Merge: prefer the one with a blob; tiebreak by savedAt.
+      slot.oldIds.add(entry.id);
+      const prefer = slot.blob && !candidate.blob
+        ? slot
+        : !slot.blob && candidate.blob ? candidate
+        : ((candidate.meta.savedAt || 0) > (slot.meta.savedAt || 0) ? candidate : slot);
+      const merged = {
+        meta: { ...prefer.meta, id: newId, savedAt: Math.max(slot.meta.savedAt || 0, candidate.meta.savedAt || 0) },
+        blob: prefer.blob,
+        oldIds: new Set([...slot.oldIds, ...candidate.oldIds]),
+      };
+      byNewId.set(newId, merged);
+    }
+    // Write the deduped index and rename blobs.
+    const nextIndex = [];
+    for (const { meta, blob, oldIds } of byNewId.values()) {
+      nextIndex.push(meta);
+      // Drop every old per-tour-blob key for this group.
+      for (const oldId of oldIds) {
+        if (oldId !== meta.id) {
+          try { window.localStorage.removeItem(TOUR_BLOB_PREFIX + oldId); } catch {}
+        }
+      }
+      if (blob) writeTourBlob(meta.id, blob);
+    }
+    writeToursIndex(nextIndex);
+    window.localStorage.setItem(TOURS_DEDUPE_FLAG_KEY, TOURS_DEDUPE_VERSION);
+  } catch {}
+}
+
 // Returns the full blob of the most recently saved tour, or null when
 // there isn't one. Used to seed Tour state on mount.
 function loadMostRecentTour() {
   migrateLegacyTourState();
+  migrateAndDedupeTours();
   const list = readToursIndex();
   if (list.length === 0) return null;
   const latest = list.slice().sort((a, b) => b.savedAt - a.savedAt)[0];
@@ -573,59 +646,134 @@ function useStopValidation(stops) {
   return { stopErrors, stopChecking, anyInvalid, anyChecking };
 }
 
-// ---------- Saved Tours panel ----------
+// ---------- Saved Tours dropdown ----------
 //
-// Lists every auto-saved tour. Clicking a row loads it back into the
-// planner without re-routing. The trash icon opens a confirmation modal
-// (the same one used everywhere else in the app) before removing the
-// index entry AND the per-tour blob. Empty state shown when no tours.
-function SavedToursPanel({ savedTours, onLoad, onDelete }) {
+// A collapsible dropdown so a long list doesn't push the rest of the
+// form below the fold. Click the toggle (or press Enter / Space) to
+// open; click outside, press Esc, or pick a row to close. Arrow keys
+// navigate; Enter loads. The currently-loaded tour gets a checkmark
+// dot and an .active class so it's obvious which one is in the planner.
+// Trash uses stopPropagation so it never doubles as a load.
+function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete }) {
+  const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(null); // { id, name } | null
-  if (!savedTours || savedTours.length === 0) {
+  const [focusIdx, setFocusIdx] = useState(-1);
+  const rootRef = useRef(null);
+  const menuRef = useRef(null);
+
+  // Click outside / Esc closes the dropdown.
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const count = (savedTours || []).length;
+  const sorted = (savedTours || []).slice().sort((a, b) => b.savedAt - a.savedAt);
+
+  const onItemKeyDown = (e, id, i) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onLoad(id);
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = Math.min(sorted.length - 1, i + 1);
+      setFocusIdx(next);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prev = Math.max(0, i - 1);
+      setFocusIdx(prev);
+    }
+  };
+
+  // Move keyboard focus when focusIdx changes.
+  useEffect(() => {
+    if (!open || focusIdx < 0 || !menuRef.current) return;
+    const items = menuRef.current.querySelectorAll("[role=option]");
+    const target = items[focusIdx];
+    if (target) target.focus();
+  }, [open, focusIdx]);
+
+  if (count === 0) {
     return (
-      <div className="card stack" style={{ gap: 8 }}>
-        <div className="card-title">
-          <h2>Saved tours</h2>
-          <span className="sub">0</span>
-        </div>
+      <div className="saved-dropdown">
+        <button className="saved-toggle" disabled>
+          <span>Saved tours</span>
+          <span className="saved-count">0</span>
+        </button>
         <p className="saved-empty">No saved tours yet. Plan your first route below!</p>
       </div>
     );
   }
-  // Show most-recently-saved first.
-  const sorted = savedTours.slice().sort((a, b) => b.savedAt - a.savedAt);
+
+  const activeName = currentTourId
+    ? (sorted.find((t) => t.id === currentTourId) || {}).name
+    : null;
+
   return (
-    <div className="card stack" style={{ gap: 10 }}>
-      <div className="card-title">
-        <h2>Saved tours</h2>
-        <span className="sub">{savedTours.length}</span>
-      </div>
-      <ul className="saved-list">
-        {sorted.map((t) => (
-          <li key={t.id} className="saved-row">
-            <button className="saved-load" onClick={() => onLoad(t.id)} title="Load this tour">
-              <div className="saved-name">{t.name}</div>
-              <div className="saved-stats">
-                <span>{Math.round(t.totalKm)} km</span>
-                <span>·</span>
-                <span>{t.stageCount} {t.stageCount === 1 ? "day" : "days"}</span>
-                <span>·</span>
-                <span>↑ {Math.round(t.totalAscent)} m</span>
-              </div>
-            </button>
-            <button
-              className="saved-trash"
-              onClick={() => setConfirm({ id: t.id, name: t.name })}
-              aria-label={`Delete ${t.name}`}
-              title="Delete this tour"
-            >🗑</button>
-          </li>
-        ))}
-      </ul>
+    <div className="saved-dropdown" ref={rootRef}>
+      <button
+        className="saved-toggle"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => { setOpen((v) => !v); setFocusIdx(-1); }}
+      >
+        <span className="saved-toggle-label">
+          {activeName ? activeName : "Saved tours"}
+        </span>
+        <span className="saved-count">{count}</span>
+        <span className="saved-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <ul className="saved-menu" role="listbox" ref={menuRef} aria-label="Saved tours">
+          {sorted.map((t, i) => {
+            const isActive = t.id === currentTourId;
+            return (
+              <li
+                key={t.id}
+                className={"saved-menu-item" + (isActive ? " active" : "")}
+                role="option"
+                aria-selected={isActive}
+                tabIndex={0}
+                onClick={() => { onLoad(t.id); setOpen(false); }}
+                onKeyDown={(e) => onItemKeyDown(e, t.id, i)}
+              >
+                <span className="saved-active-dot" aria-hidden="true">{isActive ? "✓" : ""}</span>
+                <div className="saved-main">
+                  <div className="saved-name">{t.name}</div>
+                  <div className="saved-stats">
+                    <span>{Math.round(t.totalKm)} km</span>
+                    <span>·</span>
+                    <span>{t.stageCount} {t.stageCount === 1 ? "day" : "days"}</span>
+                    <span>·</span>
+                    <span>↑ {Math.round(t.totalAscent)} m</span>
+                  </div>
+                </div>
+                <button
+                  className="saved-trash"
+                  onClick={(e) => { e.stopPropagation(); setConfirm({ id: t.id, name: t.name }); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); }}
+                  aria-label={`Delete ${t.name}`}
+                  title="Delete this tour"
+                >🗑</button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {confirm && (
         <Modal
           title="Delete tour?"
-          subtitle={`This cannot be undone.`}
+          subtitle="This cannot be undone."
           onClose={() => setConfirm(null)}
           ariaLabel="Confirm tour delete"
         >
@@ -1430,21 +1578,45 @@ function Tour({ tweaks }) {
     window.RP_IcsExport.downloadTourIcs(tour, startDate, filename);
   }, [canDownloadIcs, tour, startDate]);
 
-  // Saved Tours actions exposed to the panel built in commit 3 below.
+  // Saved Tours actions exposed to the panel.
+  // Two paths:
+  //  - happy path: the per-tour blob is present → fully restore stops,
+  //    dailyKm, startDate, tour, geometry without re-routing.
+  //  - blob-less fallback: older index entries had no blob (the legacy
+  //    saveTourToStorage never wrote one). Restore at least the stops
+  //    and startDate so clicking the row isn't a dead click — the user
+  //    can hit Plan route to regenerate geometry.
   const handleLoadTour = useCallback((id) => {
     const blob = readTourBlob(id);
-    if (!blob || !blob.tour) return;
-    if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
-    if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
-    setStartDate(blob.startDate || null);
-    setTour(blob.tour);
-    setGeometry(blob.geometry || []);
+    if (blob && blob.tour) {
+      if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
+      if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
+      setStartDate(blob.startDate || null);
+      setTour(blob.tour);
+      setGeometry(blob.geometry || []);
+      setActiveStage(0);
+      return;
+    }
+    const entry = readToursIndex().find((t) => t.id === id);
+    if (!entry) return;
+    setStops([entry.from, entry.to]);
+    setStartDate(entry.startDate || null);
     setActiveStage(0);
   }, []);
   const handleDeleteTour = useCallback((id) => {
+    // If we're deleting the currently-loaded tour, reset the planner so
+    // the map / itinerary / summary bar don't keep showing stale data.
+    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate);
     deleteTour(id);
+    if (id === currentId) {
+      const demo = initialDemo();
+      setTour({ ...demo, _geom: undefined });
+      setGeometry(demo._geom);
+      setStops(defaultStops);
+      setActiveStage(0);
+    }
     setSavedTours(readToursIndex());
-  }, []);
+  }, [tour, startDate, initialDemo, defaultStops]);
 
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
@@ -1523,6 +1695,7 @@ function Tour({ tweaks }) {
         <div className="stack" style={{ gap: 16 }}>
           <SavedToursPanel
             savedTours={savedTours}
+            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate)}
             onLoad={handleLoadTour}
             onDelete={handleDeleteTour}
           />
