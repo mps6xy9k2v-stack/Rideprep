@@ -62,6 +62,19 @@ function safeRemove(key) {
   catch (e) { warn("removeItem failed for", key, e); }
 }
 
+// Notify same-tab listeners that the saved-tours list mutated. The
+// browser's `storage` event only fires in OTHER tabs, so the Training
+// and Weather tabs need this signal to refresh when the user saves /
+// deletes a tour in this same tab. `kind` is one of "save" / "delete" /
+// "clear" / "migrate" — receivers usually just refetch the index.
+function notify(kind, detail) {
+  try {
+    window.dispatchEvent(new CustomEvent("rideprep:tour-saved", {
+      detail: { kind, ...(detail || {}) },
+    }));
+  } catch {}
+}
+
 function readIndex() {
   const raw = safeGet(INDEX_KEY);
   if (!raw) return [];
@@ -205,6 +218,7 @@ function saveTour({ tour, geometry, stops, dailyKm, startDate, id, name } = {}) 
   if (!ixWrite.ok) return { ok: false, reason: ixWrite.reason, id };
   const blobWrite = writeBlob(id, { tour, geometry, stops, dailyKm, startDate });
   if (!blobWrite.ok) return { ok: false, reason: blobWrite.reason, id };
+  notify("save", { id });
   return { ok: true, id };
 }
 
@@ -212,6 +226,7 @@ function deleteTour(id) {
   const list = readIndex().filter((t) => t.id !== id);
   writeIndex(list);
   deleteBlob(id);
+  notify("delete", { id });
 }
 
 function clearAllTours() {
@@ -226,6 +241,7 @@ function clearAllTours() {
     }
   } catch {}
   safeRemove(INDEX_KEY);
+  notify("clear");
 }
 
 // ── Low-level helpers used by migrations only ──────────────────────────────
