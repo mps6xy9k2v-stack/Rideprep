@@ -540,19 +540,51 @@ const DE_STATE_ABBR = {
   "Thuringia": "TH", "Thüringen": "TH",
 };
 
-const _NOM_PLACE_TYPES = new Set([
-  "city", "town", "village", "municipality", "hamlet", "suburb", "borough",
+// POI / non-place classes Nominatim returns. We never want a tour to
+// start at a restaurant or a building. The earlier allowlist
+// (`class === "place"` with strict types) rejected legitimate cities
+// because OSM tagging is inconsistent — a city-state like Hamburg
+// comes back as boundary/administrative, a village like Bad Laer as
+// place/village, a municipality like Stuhr as boundary/administrative
+// with admin_level=8. A denylist of POI classes plus a permissive
+// addresstype fallback covers all of those without dropping real
+// settlements.
+const _NOM_REJECTED_CLASSES = new Set([
+  "amenity", "shop", "tourism", "leisure", "office",
+  "highway", "building", "historic", "natural", "landuse",
+  "man_made", "waterway", "railway", "aeroway", "barrier",
+  "craft", "emergency", "military",
+]);
+const _NOM_CITY_LIKE_ADDRESS_TYPES = new Set([
+  "city", "town", "village", "municipality", "hamlet",
+  "suburb", "borough", "quarter",
 ]);
 
 function _isCityLike(r) {
-  if (r.class === "place") return _NOM_PLACE_TYPES.has(r.type);
-  if (r.class === "boundary") return r.type === "administrative";
+  if (!r) return false;
+  const cls = r.class;
+  const type = r.type;
+  if (_NOM_REJECTED_CLASSES.has(cls)) return false;
+  // Anything explicitly tagged as a place is a populated place.
+  if (cls === "place") return true;
+  // Administrative boundaries cover cities, towns, districts.
+  if (cls === "boundary" && type === "administrative") return true;
+  // Fallback: trust Nominatim's addresstype when it labels the result
+  // as a populated place. Catches city-states and edge tagging.
+  if (r.addresstype && _NOM_CITY_LIKE_ADDRESS_TYPES.has(r.addresstype)) return true;
   return false;
+}
+
+function _debugAc(...args) {
+  if (typeof window !== "undefined" && window.RP_DEBUG_AUTOCOMPLETE) {
+    try { console.log("[autocomplete]", ...args); } catch {}
+  }
 }
 
 function _formatSuggestion(r) {
   const name = r.address.city || r.address.town || r.address.village
-             || r.address.municipality || r.name;
+             || r.address.municipality || r.address.hamlet || r.address.suburb
+             || r.name;
   const rawCode = r.address.state_code || DE_STATE_ABBR[r.address.state] || "";
   const state = rawCode.replace(/^DE-/i, "").substring(0, 4);
   return state ? `${name}, ${state}, Deutschland` : `${name}, Deutschland`;
@@ -564,31 +596,66 @@ async function nominatimSearch(query) {
   const q = query.trim();
   if (q.length < 2) return [];
   const cacheKey = q.toLowerCase();
-  if (_nomCache.has(cacheKey)) return _nomCache.get(cacheKey);
+  if (_nomCache.has(cacheKey)) {
+    _debugAc("cache hit:", cacheKey);
+    return _nomCache.get(cacheKey);
+  }
 
+  // No `featuretype` — too restrictive against OSM's inconsistent
+  // tagging. We filter to settlements client-side via _isCityLike()
+  // which fails open (accepts anything that isn't a known POI class).
   const params = new URLSearchParams({
     q,
     countrycodes: "de",
-    featuretype: "settlement",
     addressdetails: "1",
-    limit: "12",
+    limit: "15",
     format: "jsonv2",
     "accept-language": "de",
   });
-  const r = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+  const url = `https://nominatim.openstreetmap.org/search?${params}`;
+  _debugAc("debounced query firing:", q);
+  _debugAc("request URL:", url);
+  // Note: browsers strip the User-Agent header silently — Nominatim
+  // logs the default browser UA instead. That's acceptable for the
+  // public endpoint at our scale.
+  const r = await fetch(url, {
     headers: { "User-Agent": "Rideprep/1.0 (contact@rideprep.app)" },
   });
+  _debugAc("response status:", r.status);
   if (!r.ok) throw new Error(`Nominatim ${r.status}`);
 
   const data = await r.json();
+  _debugAc("results count from Nominatim:", Array.isArray(data) ? data.length : "(non-array)");
+  if (Array.isArray(data) && data.length > 0) {
+    _debugAc("sample result[0]:", data[0]);
+  }
   const seen = new Set();
   const labels = [];
+  let rejectedSample = null;
+  let acceptedSample = null;
   for (const item of data) {
-    if (!_isCityLike(item)) continue;
+    if (!_isCityLike(item)) {
+      if (!rejectedSample) {
+        rejectedSample = {
+          name: item.name, class: item.class, type: item.type,
+          addresstype: item.addresstype,
+        };
+      }
+      continue;
+    }
+    if (!acceptedSample) {
+      acceptedSample = {
+        name: item.name, class: item.class, type: item.type,
+        addresstype: item.addresstype,
+      };
+    }
     const label = _formatSuggestion(item);
     if (!seen.has(label)) { seen.add(label); labels.push(label); }
     if (labels.length >= 8) break;
   }
+  _debugAc("after filter, results count:", labels.length);
+  _debugAc("filter rejected sample:", rejectedSample);
+  _debugAc("filter accepted sample:", acceptedSample);
   _nomCache.set(cacheKey, labels);
   return labels;
 }
