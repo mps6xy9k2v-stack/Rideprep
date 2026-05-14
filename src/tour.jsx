@@ -3,20 +3,140 @@
 (() => {
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-// ---------- Full-state persistence ----------
+// ---------- Saved-tour persistence ----------
 //
-// Auto-persist the full Tour Planner state (stops, route, settings, geometry)
-// to localStorage on every change, so switching tabs or reloading the page
-// returns the user to their last route. The lightweight "ridePrep:tours"
-// record is kept in sync as a side effect so Training sees current data
-// without requiring an explicit Save click.
-const TOUR_STATE_KEY = "ridePrep:tourState";
+// Storage schema:
+//   ridePrep:tours          — lightweight index (array of TourMeta)
+//   ridePrep:tour:<id>      — full state per tour (stops, dailyKm, startDate,
+//                             tour, geometry). Restored on app load and
+//                             when the user clicks a row in Saved Tours.
+//
+// TourMeta = { id, name, from, to, totalKm, totalAscent, stageCount,
+//              startDate, savedAt }
+//
+// ID is derived from (from, to, startDate) so re-planning the same trip
+// updates the same record instead of creating duplicates.
+const TOURS_INDEX_KEY = "ridePrep:tours";
+const TOUR_BLOB_PREFIX = "ridePrep:tour:";
+const LEGACY_TOUR_STATE_KEY = "ridePrep:tourState"; // pre-multi-tour singleton
 
-function loadFullTourState() {
+function slugify(s) {
+  return String(s || "")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "x";
+}
+
+function tourIdFor(from, to, startDate) {
+  return `${slugify(from)}_${slugify(to)}_${startDate || "nodate"}`;
+}
+
+function readToursIndex() {
   try {
-    const raw = window.localStorage.getItem(TOUR_STATE_KEY);
+    const raw = window.localStorage.getItem(TOURS_INDEX_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+function writeToursIndex(list) {
+  try { window.localStorage.setItem(TOURS_INDEX_KEY, JSON.stringify(list)); } catch {}
+}
+
+function readTourBlob(id) {
+  try {
+    const raw = window.localStorage.getItem(TOUR_BLOB_PREFIX + id);
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
+}
+
+function writeTourBlob(id, blob) {
+  try { window.localStorage.setItem(TOUR_BLOB_PREFIX + id, JSON.stringify(blob)); } catch {}
+}
+
+function deleteTourBlob(id) {
+  try { window.localStorage.removeItem(TOUR_BLOB_PREFIX + id); } catch {}
+}
+
+function fmtDe(isoOrNull) {
+  if (!isoOrNull) return null;
+  const m = String(isoOrNull).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return `${m[3]}.${m[2]}.${m[1]}`;
+}
+
+function cityShortLabel(label) {
+  return String(label || "").split(",")[0].trim() || "?";
+}
+
+function buildTourName(from, to, startDate) {
+  const fromS = cityShortLabel(from), toS = cityShortLabel(to);
+  const ds = fmtDe(startDate);
+  return ds ? `${fromS} → ${toS} (${ds})` : `${fromS} → ${toS}`;
+}
+
+// Auto-save: writes both the index entry (or updates an existing one with
+// the same ID) and the per-tour blob. Returns the entry ID. Silent — no
+// user feedback by design.
+function saveTour({ tour, geometry, stops, dailyKm, startDate }) {
+  if (!tour || !tour.from || !tour.to) return null;
+  const id = tourIdFor(tour.from, tour.to, startDate);
+  const stageCount = Array.isArray(tour.stages) ? tour.stages.length : 0;
+  const meta = {
+    id,
+    name: buildTourName(tour.from, tour.to, startDate),
+    from: tour.from,
+    to: tour.to,
+    totalKm: tour.totalKm || 0,
+    totalAscent: tour.totalAscent || 0,
+    stageCount,
+    startDate: startDate || null,
+    savedAt: Date.now(),
+  };
+  const list = readToursIndex();
+  const existingIdx = list.findIndex((t) => t.id === id);
+  if (existingIdx >= 0) list[existingIdx] = meta;
+  else list.push(meta);
+  writeToursIndex(list);
+  writeTourBlob(id, { tour, geometry, stops, dailyKm, startDate });
+  return id;
+}
+
+function deleteTour(id) {
+  const list = readToursIndex().filter((t) => t.id !== id);
+  writeToursIndex(list);
+  deleteTourBlob(id);
+}
+
+// One-shot migration: a pre-multi-tour install only had the singleton
+// "ridePrep:tourState". On first load, lift it into the new per-tour
+// schema and remove the legacy key so it doesn't linger.
+function migrateLegacyTourState() {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_TOUR_STATE_KEY);
+    if (!raw) return;
+    const legacy = JSON.parse(raw);
+    if (legacy && legacy.tour && legacy.tour.from && legacy.tour.to) {
+      saveTour({
+        tour: legacy.tour,
+        geometry: legacy.geometry || null,
+        stops: legacy.stops || [legacy.tour.from, legacy.tour.to],
+        dailyKm: legacy.dailyKm || 120,
+        startDate: legacy.startDate || null,
+      });
+    }
+    window.localStorage.removeItem(LEGACY_TOUR_STATE_KEY);
+  } catch {}
+}
+
+// Returns the full blob of the most recently saved tour, or null when
+// there isn't one. Used to seed Tour state on mount.
+function loadMostRecentTour() {
+  migrateLegacyTourState();
+  const list = readToursIndex();
+  if (list.length === 0) return null;
+  const latest = list.slice().sort((a, b) => b.savedAt - a.savedAt)[0];
+  return readTourBlob(latest.id);
 }
 
 // ---------- ORS API helpers ----------
@@ -453,7 +573,7 @@ function useStopValidation(stops) {
   return { stopErrors, stopChecking, anyInvalid, anyChecking };
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, onSave, saveFeedback, loading, error }) {
+function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
   const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
   const planDisabled = loading || anyInvalid || anyChecking;
@@ -574,12 +694,7 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
         >
           {loading ? "Planning…" : anyChecking ? "Checking addresses…" : "Plan route"}
         </button>
-        <button className="btn btn-ghost" onClick={onSave}>Save</button>
       </div>
-
-      {saveFeedback && (
-        <div className="save-feedback">{saveFeedback}</div>
-      )}
 
       {error && (
         <div style={{
@@ -1140,59 +1255,19 @@ function SummaryBar({ tour, units }) {
   );
 }
 
-// ---------- localStorage persistence ----------
-//
-// Tour Planner state is local to this component and not shared. The "Save"
-// button writes a lightweight record (no geometry) to ridePrep:tours so the
-// Training page can read available tours without depending on component state.
-//
-// Saved record shape:
-//   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
-//
-// Tours are identified by from+to — saving the same route overwrites the
-// previous entry with the same stable id, keeping Training's tourId reference
-// valid across re-saves.
-function saveTourToStorage(tour) {
-  try {
-    const raw = window.localStorage.getItem("ridePrep:tours");
-    const list = raw ? JSON.parse(raw) : [];
-    const existingIdx = list.findIndex((t) => t.from === tour.from && t.to === tour.to);
-    const stages = (tour.stages || []).map((s, i) => ({
-      idx: i,
-      from: s.from,
-      to: s.to,
-      km: s.km,
-      ascent: s.ascent,
-      hours: s.hours,
-      lat: s.lat ?? null,
-      lng: s.lng ?? null,
-    }));
-    const entry = {
-      id: existingIdx >= 0 ? list[existingIdx].id : `tour_${Date.now()}`,
-      name: `${tour.from} → ${tour.to}`,
-      from: tour.from,
-      to: tour.to,
-      totalKm: tour.totalKm || 0,
-      totalAscent: tour.totalAscent || 0,
-      stageCount: stages.length,
-      stages,
-      savedAt: Date.now(),
-    };
-    if (existingIdx >= 0) list[existingIdx] = entry;
-    else list.push(entry);
-    window.localStorage.setItem("ridePrep:tours", JSON.stringify(list));
-    window.localStorage.setItem("ridePrep:currentTourId", entry.id);
-    try { window.dispatchEvent(new CustomEvent("rideprep:tour-saved", { detail: entry })); } catch {}
-    return entry.id;
-  } catch { return null; }
-}
+// The lightweight saveTourToStorage that pre-existed here has been
+// replaced by saveTour() at the top of this file, which writes both the
+// index entry and the full per-tour blob (so Saved Tours can restore a
+// trip without re-routing). Auto-save is wired in planRoute below.
 
 // ---------- Top-level Tour view ----------
 function Tour({ tweaks }) {
-  // Load any previously-persisted state once on mount. Subsequent renders
-  // reuse the same object via useMemo so the lazy useState initialisers
-  // below all see the same snapshot.
-  const saved = useMemo(() => loadFullTourState(), []);
+  // Load the most recently saved tour on mount. saveTour() writes both
+  // the lightweight index and a full per-tour blob, so a returning user
+  // lands on their last planned trip with route, stages, and chart all
+  // intact (no re-routing required). Legacy ridePrep:tourState payloads
+  // are migrated into the new schema on first read.
+  const saved = useMemo(() => loadMostRecentTour(), []);
   const { DEMO_TOUR: _DT } = window.RP_DATA;
   const defaultStops = [_DT.from, _DT.to];
 
@@ -1259,22 +1334,19 @@ function Tour({ tweaks }) {
 
   const [tour, setTour] = useState(() => (saved && saved.tour) || initialDemo());
   const [geometry, setGeometry] = useState(() => (saved && saved.geometry) || initialDemo()._geom);
-  const [saveFeedback, setSaveFeedback] = useState(null);
+  // Index of saved tours mirrored in component state so the Saved Tours
+  // panel re-renders when an auto-save lands or a delete happens.
+  const [savedTours, setSavedTours] = useState(() => readToursIndex());
 
-  // Auto-persist the full state on any change so tab switches and reloads
-  // restore the user's tour. Also write the lightweight ridePrep:tours record
-  // so Training picks up edits without an explicit Save click.
+  // Cross-tab live updates: another tab / window deleting a tour or
+  // saving one should reflect here without a manual reload.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        TOUR_STATE_KEY,
-        JSON.stringify({ tour, geometry, stops, dailyKm, startDate })
-      );
-    } catch {}
-    if (tour && tour.from && tour.to && tour.stages && tour.stages.length) {
-      saveTourToStorage(tour);
-    }
-  }, [tour, geometry, stops, dailyKm, startDate]);
+    const onStorage = (e) => {
+      if (e.key === TOURS_INDEX_KEY) setSavedTours(readToursIndex());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const canDownloadIcs = !!startDate && !!tour && Array.isArray(tour.stages) && tour.stages.length > 0;
 
@@ -1286,11 +1358,21 @@ function Tour({ tweaks }) {
     window.RP_IcsExport.downloadTourIcs(tour, startDate, filename);
   }, [canDownloadIcs, tour, startDate]);
 
-  const handleSave = useCallback(() => {
-    const id = saveTourToStorage(tour);
-    setSaveFeedback(id ? "Tour saved!" : "Save failed");
-    setTimeout(() => setSaveFeedback(null), 2500);
-  }, [tour]);
+  // Saved Tours actions exposed to the panel built in commit 3 below.
+  const handleLoadTour = useCallback((id) => {
+    const blob = readTourBlob(id);
+    if (!blob || !blob.tour) return;
+    if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
+    if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
+    setStartDate(blob.startDate || null);
+    setTour(blob.tour);
+    setGeometry(blob.geometry || []);
+    setActiveStage(0);
+  }, []);
+  const handleDeleteTour = useCallback((id) => {
+    deleteTour(id);
+    setSavedTours(readToursIndex());
+  }, []);
 
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
@@ -1332,7 +1414,7 @@ function Tour({ tweaks }) {
         };
       });
 
-      setTour({
+      const nextTour = {
         from: labels[0],
         to: labels[labels.length - 1],
         stops: labels,
@@ -1341,15 +1423,26 @@ function Tour({ tweaks }) {
         totalAscent: itin.totalAscent,
         meters: summary && summary.distance,
         seconds: summary && summary.duration,
-      });
+      };
+      setTour(nextTour);
       setGeometry(coords);
       setActiveStage(0);
+      // Auto-save: silent, no toast. The Saved Tours panel re-renders
+      // because we mirror the index in component state below.
+      saveTour({
+        tour: nextTour,
+        geometry: coords,
+        stops: labels,
+        dailyKm,
+        startDate,
+      });
+      setSavedTours(readToursIndex());
     } catch (e) {
       setError(String(e.message || e));
     } finally {
       setLoading(false);
     }
-  }, [stops, dailyKm, initialDemo]);
+  }, [stops, dailyKm, startDate, initialDemo]);
 
   return (
     <div className="fade-in">
@@ -1361,8 +1454,6 @@ function Tour({ tweaks }) {
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
             onPlan={planRoute}
-            onSave={handleSave}
-            saveFeedback={saveFeedback}
             loading={loading}
             error={error}
           />
