@@ -14,11 +14,17 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
 // TourMeta = { id, name, from, to, totalKm, totalAscent, stageCount,
 //              startDate, savedAt }
 //
+// Storage primitives live in src/tourStorage.js (window.RP_TourStorage)
+// so the Weather tab and other modules share the same single source of
+// truth. The few helpers below are still here because they're tied to
+// the routing/UI layer (ID derivation, display-name formatting, the
+// in-PR dedup migration that needs normalizeAddressForId).
+//
 // ID is derived from (from, to, startDate) so re-planning the same trip
 // updates the same record instead of creating duplicates.
-const TOURS_INDEX_KEY = "ridePrep:tours";
-const TOUR_BLOB_PREFIX = "ridePrep:tour:";
-const LEGACY_TOUR_STATE_KEY = "ridePrep:tourState"; // pre-multi-tour singleton
+const _TS = () => window.RP_TourStorage;
+const TOURS_INDEX_KEY = "rideprep:savedTours:v1";  // mirrored from tourStorage.js
+const TOUR_BLOB_PREFIX = "rideprep:savedTour:v1:"; // for storage-event listeners
 
 function slugify(s) {
   return String(s || "")
@@ -39,31 +45,17 @@ function tourIdFor(from, to, startDate) {
   return `${slugify(normalizeAddressForId(from))}_${slugify(normalizeAddressForId(to))}_${startDate || "nodate"}`;
 }
 
-function readToursIndex() {
-  try {
-    const raw = window.localStorage.getItem(TOURS_INDEX_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list : [];
-  } catch { return []; }
-}
-
+// Back-compat shims so existing call sites in this file don't churn.
+function readToursIndex() { return _TS() ? _TS().loadSavedTours() : []; }
+function readTourBlob(id) { return _TS() ? _TS().loadTourBlob(id) : null; }
 function writeToursIndex(list) {
-  try { window.localStorage.setItem(TOURS_INDEX_KEY, JSON.stringify(list)); } catch {}
+  if (_TS()) _TS()._writeIndexRaw(list);
 }
-
-function readTourBlob(id) {
-  try {
-    const raw = window.localStorage.getItem(TOUR_BLOB_PREFIX + id);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-
 function writeTourBlob(id, blob) {
-  try { window.localStorage.setItem(TOUR_BLOB_PREFIX + id, JSON.stringify(blob)); } catch {}
+  if (_TS()) _TS()._writeBlobRaw(id, blob);
 }
-
 function deleteTourBlob(id) {
-  try { window.localStorage.removeItem(TOUR_BLOB_PREFIX + id); } catch {}
+  if (_TS()) _TS()._deleteBlobRaw(id);
 }
 
 function fmtDe(isoOrNull) {
@@ -83,58 +75,24 @@ function buildTourName(from, to, startDate) {
   return ds ? `${fromS} → ${toS} (${ds})` : `${fromS} → ${toS}`;
 }
 
-// Auto-save: writes both the index entry (or updates an existing one with
-// the same ID) and the per-tour blob. Returns the entry ID. Silent — no
-// user feedback by design.
+// Thin wrapper around RP_TourStorage.saveTour that supplies the
+// derived ID and display name (which the storage layer doesn't know
+// how to compute). Returns the same { ok, reason?, id } envelope so
+// callers can surface quota errors.
 function saveTour({ tour, geometry, stops, dailyKm, startDate }) {
-  if (!tour || !tour.from || !tour.to) return null;
+  if (!_TS()) return { ok: false, reason: "no-storage" };
+  if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
   const id = tourIdFor(tour.from, tour.to, startDate);
-  const stageCount = Array.isArray(tour.stages) ? tour.stages.length : 0;
-  const meta = {
-    id,
-    name: buildTourName(tour.from, tour.to, startDate),
-    from: tour.from,
-    to: tour.to,
-    totalKm: tour.totalKm || 0,
-    totalAscent: tour.totalAscent || 0,
-    stageCount,
-    startDate: startDate || null,
-    savedAt: Date.now(),
-  };
-  const list = readToursIndex();
-  const existingIdx = list.findIndex((t) => t.id === id);
-  if (existingIdx >= 0) list[existingIdx] = meta;
-  else list.push(meta);
-  writeToursIndex(list);
-  writeTourBlob(id, { tour, geometry, stops, dailyKm, startDate });
-  return id;
+  const name = buildTourName(tour.from, tour.to, startDate);
+  return _TS().saveTour({ tour, geometry, stops, dailyKm, startDate, id, name });
 }
 
 function deleteTour(id) {
-  const list = readToursIndex().filter((t) => t.id !== id);
-  writeToursIndex(list);
-  deleteTourBlob(id);
+  if (_TS()) _TS().deleteTour(id);
 }
 
-// One-shot migration: a pre-multi-tour install only had the singleton
-// "ridePrep:tourState". On first load, lift it into the new per-tour
-// schema and remove the legacy key so it doesn't linger.
-function migrateLegacyTourState() {
-  try {
-    const raw = window.localStorage.getItem(LEGACY_TOUR_STATE_KEY);
-    if (!raw) return;
-    const legacy = JSON.parse(raw);
-    if (legacy && legacy.tour && legacy.tour.from && legacy.tour.to) {
-      saveTour({
-        tour: legacy.tour,
-        geometry: legacy.geometry || null,
-        stops: legacy.stops || [legacy.tour.from, legacy.tour.to],
-        dailyKm: legacy.dailyKm || 120,
-        startDate: legacy.startDate || null,
-      });
-    }
-    window.localStorage.removeItem(LEGACY_TOUR_STATE_KEY);
-  } catch {}
+function clearAllSavedTours() {
+  if (_TS()) _TS().clearAllTours();
 }
 
 // Earlier versions of this file generated tour IDs from either a
@@ -202,9 +160,9 @@ function migrateAndDedupeTours() {
 }
 
 // Returns the full blob of the most recently saved tour, or null when
-// there isn't one. Used to seed Tour state on mount.
+// there isn't one. Used to seed Tour state on mount. The legacy-key
+// rename now lives in src/tourStorage.js (runs at module load).
 function loadMostRecentTour() {
-  migrateLegacyTourState();
   migrateAndDedupeTours();
   const list = readToursIndex();
   if (list.length === 0) return null;
@@ -654,9 +612,12 @@ function useStopValidation(stops) {
 // navigate; Enter loads. The currently-loaded tour gets a checkmark
 // dot and an .active class so it's obvious which one is in the planner.
 // Trash uses stopPropagation so it never doubles as a load.
-function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete }) {
+function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearAll }) {
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(null); // { id, name } | null
+  // Separate state for the "Clear all" confirmation — it's not a per-row
+  // delete so it needs its own modal trigger.
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
   const rootRef = useRef(null);
   const menuRef = useRef(null);
@@ -768,6 +729,13 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete }) {
               </li>
             );
           })}
+          <li className="saved-menu-clear" role="presentation">
+            <button
+              type="button"
+              className="saved-clear-all"
+              onClick={(e) => { e.stopPropagation(); setConfirmClearAll(true); }}
+            >Clear all saved tours</button>
+          </li>
         </ul>
       )}
       {confirm && (
@@ -786,6 +754,25 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete }) {
               className="btn btn-primary"
               onClick={() => { onDelete(confirm.id); setConfirm(null); }}
             >Delete</button>
+          </div>
+        </Modal>
+      )}
+      {confirmClearAll && (
+        <Modal
+          title="Clear all saved tours?"
+          subtitle="This cannot be undone."
+          onClose={() => setConfirmClearAll(false)}
+          ariaLabel="Confirm clear all tours"
+        >
+          <p style={{ margin: 0, fontSize: 14, color: "var(--fg)" }}>
+            Delete all <strong>{savedTours.length}</strong> saved tour{savedTours.length === 1 ? "" : "s"}?
+          </p>
+          <div className="plan-actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setConfirmClearAll(false)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { onClearAll(); setConfirmClearAll(false); setOpen(false); }}
+            >Delete all</button>
           </div>
         </Modal>
       )}
@@ -1557,6 +1544,10 @@ function Tour({ tweaks }) {
   // Index of saved tours mirrored in component state so the Saved Tours
   // panel re-renders when an auto-save lands or a delete happens.
   const [savedTours, setSavedTours] = useState(() => readToursIndex());
+  // Banner shown when a localStorage write hits the browser quota.
+  // null when storage is fine; a string message when not. Cleared by
+  // the user dismissing it or by the next successful save.
+  const [storageBanner, setStorageBanner] = useState(null);
 
   // Cross-tab live updates: another tab / window deleting a tour or
   // saving one should reflect here without a manual reload.
@@ -1618,6 +1609,18 @@ function Tour({ tweaks }) {
     setSavedTours(readToursIndex());
   }, [tour, startDate, initialDemo, defaultStops]);
 
+  const handleClearAllTours = useCallback(() => {
+    clearAllSavedTours();
+    setSavedTours([]);
+    setStorageBanner(null);
+    const demo = initialDemo();
+    setTour({ ...demo, _geom: undefined });
+    setGeometry(demo._geom);
+    setStops(defaultStops);
+    setStartDate(null);
+    setActiveStage(0);
+  }, [initialDemo, defaultStops]);
+
   const planRoute = useCallback(async () => {
     const key = window.__ORS_API_KEY__;
     setError(null);
@@ -1671,15 +1674,18 @@ function Tour({ tweaks }) {
       setTour(nextTour);
       setGeometry(coords);
       setActiveStage(0);
-      // Auto-save: silent, no toast. The Saved Tours panel re-renders
-      // because we mirror the index in component state below.
-      saveTour({
+      // Auto-save: silent on success, surfaces a banner on quota
+      // failure so the user knows storage is full.
+      const saveResult = saveTour({
         tour: nextTour,
         geometry: coords,
         stops: labels,
         dailyKm,
         startDate,
       });
+      if (saveResult && saveResult.reason === "quota") {
+        setStorageBanner("Storage limit reached. Delete some saved tours to make room.");
+      }
       setSavedTours(readToursIndex());
     } catch (e) {
       setError(String(e.message || e));
@@ -1698,7 +1704,18 @@ function Tour({ tweaks }) {
             currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate)}
             onLoad={handleLoadTour}
             onDelete={handleDeleteTour}
+            onClearAll={handleClearAllTours}
           />
+          {storageBanner && (
+            <div className="storage-banner" role="alert">
+              <span>{storageBanner}</span>
+              <button
+                className="storage-banner-close"
+                onClick={() => setStorageBanner(null)}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
           <TourForm
             stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
@@ -1768,15 +1785,7 @@ function Tour({ tweaks }) {
 }
 
 window.RP_Tour = Tour;
-// Expose the saved-tour storage helpers so other tabs (Weather) can
-// resolve a saved-tour id to its full blob (stages with lat/lng,
-// startDate, geometry) without reaching into localStorage directly.
-window.RP_TourStorage = {
-  readToursIndex,
-  readTourBlob,
-  saveTour,
-  deleteTour,
-  TOURS_INDEX_KEY,
-  TOUR_BLOB_PREFIX,
-};
+// window.RP_TourStorage is provided by src/tourStorage.js (loaded
+// before this file), so other tabs (Weather) and migrations share one
+// API surface. We don't re-export anything here to avoid clobbering it.
 })();

@@ -1019,6 +1019,51 @@ input[type="range"]::-moz-range-thumb {
   border-radius: var(--radius);
   text-align: center;
 }
+.saved-menu-clear {
+  list-style: none;
+  margin-top: 4px;
+  padding: 6px 6px 2px;
+  border-top: 1px solid var(--line);
+}
+.saved-clear-all {
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  transition: all .15s;
+  cursor: pointer;
+}
+.saved-clear-all:hover {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 60%, transparent);
+  border-style: solid;
+}
+.storage-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--danger) 60%, transparent);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--fg);
+}
+.storage-banner span { flex: 1; }
+.storage-banner-close {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1;
+}
 @media (max-width: 640px) {
   .saved-menu {
     position: fixed;
@@ -2204,6 +2249,7 @@ input[type="range"]::-moz-range-thumb {
 <script src="./src/icsExport.js"></script>
 <script src="./src/destInfo.js"></script>
 <script src="./src/elevation.js"></script>
+<script src="./src/tourStorage.js"></script>
 <script type="text/babel" data-presets="react" src="./src/training.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/tour.jsx"></script>
 <script type="text/babel" data-presets="react" src="./src/weather.jsx"></script>
