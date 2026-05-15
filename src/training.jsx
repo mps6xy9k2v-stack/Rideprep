@@ -1137,7 +1137,9 @@ function GlossaryModal({ onClose }) {
     };
   }, [onClose]);
 
-  return (
+  // Portal onto document.body so position:fixed is never trapped by an
+  // ancestor transform or animation stacking context (e.g. .fade-in).
+  return ReactDOM.createPortal(
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -1163,7 +1165,8 @@ function GlossaryModal({ onClose }) {
           ))}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
