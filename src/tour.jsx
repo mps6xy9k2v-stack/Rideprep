@@ -1691,9 +1691,15 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
 // ---------- Summary bar ----------
 function SummaryBar({ tour, units }) {
   const { fmtKm, fmtElev } = window.RP_SHARED;
-  const totalKm = tour.totalKm ?? (tour.stages || []).reduce((a, b) => a + b.km, 0);
-  const totalAsc = tour.totalAscent ?? (tour.stages || []).reduce((a, b) => a + b.ascent, 0);
-  const days = (tour.stages || []).length;
+  const stages = tour.stages || [];
+  // Single source of truth: the summary is always the sum of what the
+  // stage cards display. Reading tour.totalAscent / tour.totalKm risks
+  // drift after a save → load round-trip or a merge in the dedupe
+  // migration; recomputing here makes the bar mathematically equal to
+  // sum of cards by construction.
+  const totalKm = stages.reduce((a, b) => a + (b.km || 0), 0);
+  const totalAsc = stages.reduce((a, b) => a + (b.ascent || 0), 0);
+  const days = stages.length;
 
   return (
     <div className="summary-bar">

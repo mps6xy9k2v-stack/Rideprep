@@ -8,23 +8,31 @@
 //
 // Pipeline (Komoot/Strava-style):
 //   1. Resample the [lng, lat, elev] series to one point every RESAMPLE_DISTANCE_M
-//   2. Smooth elevations with a moving average (SMOOTHING_WINDOW points)
-//   3. Clamp any single-sample delta > OUTLIER_CLAMP_METERS as a DEM artifact
-//      (bridges/tunnels measure ground level under the road)
-//   4. Threshold-sum ascent/descent: deltas < MIN_DELTA_METERS don't count,
-//      so tiny DEM noise can't accumulate
-//   5. Downsample to ~200 points for the chart
+//   2. Despike single-sample DEM artifacts > DESPIKE_THRESHOLD_M
+//   3. Gaussian-smooth elevations with GAUSSIAN_SIGMA
+//   4. Hysteresis ascent/descent: only commit a climb/descent when the
+//      smoothed series has moved ≥ MIN_DELTA_METERS away from the
+//      running peak/trough, so sub-threshold noise can't accumulate
+//   5. Downsample to ~CHART_POINTS for the area chart
 //
-// Tune these constants if the calibration shifts.
+// Tune the constants below if the calibration shifts (e.g. ascent
+// values diverge from Komoot for the same route).
 
 (() => {
 
-const SMOOTHING_WINDOW = 5;        // points (≈150 m at 30 m resample)
-const MIN_DELTA_METERS = 3;        // smaller deltas treated as noise
-const RESAMPLE_DISTANCE_M = 30;    // meters between resampled points
-const DESPIKE_THRESHOLD_M = 25;    // isolated single-sample spikes above this
-                                   // are treated as DEM artifacts (bridges,
-                                   // tunnels) and replaced with neighbor avg
+// Elevation pipeline tuning — adjust if ascent values diverge from
+// Komoot / Strava. Calibration target is within ±20 % of those tools
+// for both flat (North Germany) and mountainous (Alpine) routes.
+const RESAMPLE_DISTANCE_M = 50;    // higher = fewer noise points
+const GAUSSIAN_SIGMA = 4;          // wider Gaussian = smoother. sigma=4
+                                   // at 50 m resample = ±200 m kernel
+                                   // half-width; preserves real climbs
+                                   // ≳ 500 m long while flattening the
+                                   // 10-20 m DEM noise that dominates
+                                   // North-German plateau routes.
+const MIN_DELTA_METERS = 5;        // ignore wobbles smaller than this
+const DESPIKE_THRESHOLD_M = 25;    // single-sample DEM spikes replaced
+                                   // with the neighbor average
 const CHART_POINTS = 200;          // downsampled count for the area chart
 
 function distMeters(a, b) {
@@ -81,15 +89,32 @@ function despike(values, threshold) {
   return out;
 }
 
-function movingAverage(values, windowSize) {
-  const half = Math.floor(windowSize / 2);
+// Gaussian smoothing — what Komoot / Strava use. Kernel size is
+// 2 * ceil(3 * sigma) + 1 (so weights below ~1 % are skipped). Removes
+// GPS / DEM noise while preserving the shape of real climbs better
+// than a flat-window moving average. The kernel is precomputed once
+// per call since sigma is fixed per pipeline run.
+function gaussianSmooth(values, sigma) {
+  const half = Math.max(1, Math.ceil(sigma * 3));
+  const size = half * 2 + 1;
+  const kernel = new Float64Array(size);
+  let kSum = 0;
+  for (let i = 0; i < size; i++) {
+    const x = i - half;
+    kernel[i] = Math.exp(-(x * x) / (2 * sigma * sigma));
+    kSum += kernel[i];
+  }
+  for (let i = 0; i < size; i++) kernel[i] /= kSum;
   const out = new Float64Array(values.length);
   for (let i = 0; i < values.length; i++) {
-    let sum = 0, n = 0;
-    const lo = Math.max(0, i - half);
-    const hi = Math.min(values.length - 1, i + half);
-    for (let k = lo; k <= hi; k++) { sum += values[k]; n++; }
-    out[i] = sum / n;
+    let val = 0;
+    for (let j = 0; j < size; j++) {
+      // Clamp at the edges (repeat the boundary value) so the smoothed
+      // series doesn't dip toward zero at the route ends.
+      const idx = Math.min(Math.max(i - half + j, 0), values.length - 1);
+      val += values[idx] * kernel[j];
+    }
+    out[i] = val;
   }
   return out;
 }
@@ -107,10 +132,10 @@ function computeProfile(coords) {
   const resampled = resampleByDistance(coords, RESAMPLE_DISTANCE_M);
   if (resampled.length < 2) return empty;
 
-  // 2. Despike isolated DEM artifacts, then smooth.
+  // 2. Despike isolated DEM artifacts, then Gaussian-smooth.
   const raw = resampled.map((c) => c[2]);
   const cleaned = despike(raw, DESPIKE_THRESHOLD_M);
-  const smoothed = movingAverage(cleaned, SMOOTHING_WINDOW);
+  const smoothed = gaussianSmooth(cleaned, GAUSSIAN_SIGMA);
 
   // 3. Segment-based hysteresis (Komoot/Strava style). Track the current
   // climb or descent as a segment: the moment we drop MIN_DELTA_METERS
@@ -191,7 +216,7 @@ function computeProfile(coords) {
 
 window.RP_Elevation = {
   computeProfile,
-  PARAMS: { SMOOTHING_WINDOW, MIN_DELTA_METERS, RESAMPLE_DISTANCE_M, DESPIKE_THRESHOLD_M, CHART_POINTS },
+  PARAMS: { GAUSSIAN_SIGMA, MIN_DELTA_METERS, RESAMPLE_DISTANCE_M, DESPIKE_THRESHOLD_M, CHART_POINTS },
 };
 
 })();
