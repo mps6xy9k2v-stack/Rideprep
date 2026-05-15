@@ -831,7 +831,9 @@ function describePlan(plan) {
   ].filter(Boolean).join("\n");
 }
 
-window.RP_PlanGenerator = { generatePlan, describePlan };
+// estimateFTP is exposed so the UI can show the same FTP the generator uses
+// (e.g. the "Estimated FTP" line in Fitness Level mode).
+window.RP_PlanGenerator = { generatePlan, describePlan, estimateFTP };
 
 })();
 

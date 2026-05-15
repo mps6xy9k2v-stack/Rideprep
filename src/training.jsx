@@ -8,6 +8,7 @@ const Tooltip = window.RP_SHARED.Tooltip;
 
 const TIP = {
   totalVolume: "Total training time across all weeks of the plan.",
+  totalDistance: "Estimated total kilometres across the entire plan. Calculated from your power-to-weight ratio and body size.",
   peakWeek:    "Your highest-volume week, usually 2-3 weeks before the event. After this, training tapers off so you arrive fresh.",
   climbing:    "How hilly your event is, in metres of elevation gain per kilometre. Higher means hillier.",
   tss:         "Training Stress Score. A measure of how demanding this workout is overall.",
@@ -414,10 +415,34 @@ function AthleteProfileCard({ inputs, setInputs }) {
               onChange={(v) => setAthlete({ fitnessLevel: v })}
               wrap
             />
+            <EstimatedFtpLine athlete={athlete} />
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+// Live "Estimated FTP" readout shown only in Fitness Level mode. Uses the same
+// estimator the plan generator does, so the UI and the plan stay consistent.
+function EstimatedFtpLine({ athlete }) {
+  if (!athlete.fitnessLevel || !athlete.weight || !athlete.gender) return null;
+  const gen = window.RP_PlanGenerator && window.RP_PlanGenerator.estimateFTP;
+  if (!gen) return null;
+  const ftp = gen({
+    fitnessMode: "Fitness Level",
+    fitnessLevel: athlete.fitnessLevel,
+    weight: athlete.weight,
+    gender: athlete.gender,
+  });
+  if (!ftp || !isFinite(ftp)) return null;
+  return (
+    <p className="est-ftp">
+      <Tooltip content="Calculated from your fitness level, weight, and gender.">
+        <span className="tip-trigger">Estimated FTP</span>
+      </Tooltip>
+      : {ftp} W
+    </p>
   );
 }
 
@@ -634,6 +659,7 @@ function EmptyPlanState() {
 function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
+  const totalKm = weeks.reduce((s, w) => s + w.totalKm, 0);
   const peak = pickPeakWeek(weeks);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
@@ -661,6 +687,10 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
         <div>
           <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
           <span className="val">{Math.round(totalHours)} hrs</span>
+        </div>
+        <div>
+          <Tooltip content={TIP.totalDistance} side="bottom"><span className="label tip-trigger">Total distance</span></Tooltip>
+          <span className="val">{Math.round(totalKm).toLocaleString()} km</span>
         </div>
         <div>
           <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
@@ -757,7 +787,7 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
       <div className="card-title">
         <h2>Week {week.number}</h2>
         <span className="sub">
-          {week.phase}{week.isRecoveryWeek ? " · Recovery" : ""} · {week.totalHours} hrs · TSS {week.totalTSS}
+          {week.phase}{week.isRecoveryWeek ? " · Recovery" : ""} · {week.totalHours} hrs · {Math.round(week.totalKm)} km · TSS {week.totalTSS}
         </span>
       </div>
 
@@ -1156,6 +1186,7 @@ function PrintView({ plan, planInputs }) {
   const eventLabel = EVENT_LABEL[meta.eventType] || meta.eventType;
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
+  const totalKm = weeks.reduce((s, w) => s + w.totalKm, 0);
   const peak = pickPeakWeek(weeks);
   const generatedStr = formatPrintDate(new Date().toISOString().split("T")[0]);
   const phaseLine = phases
@@ -1211,6 +1242,7 @@ function PrintView({ plan, planInputs }) {
         <dl className="print-kv">
           <dt>Total weeks</dt><dd>{meta.weeksUntilEvent}</dd>
           <dt>Total volume</dt><dd>{Math.round(totalHours)} hrs</dd>
+          <dt>Total distance</dt><dd>{Math.round(totalKm).toLocaleString()} km</dd>
           <dt>Peak week</dt>
           <dd>Wk {peak.number} · {peak.totalHours} hrs · TSS {peak.totalTSS}</dd>
           {tierLabel && (<><dt>Climbing</dt><dd>{tierLabel} · {meta.climbingDensity} m/km</dd></>)}
@@ -1228,7 +1260,7 @@ function PrintView({ plan, planInputs }) {
             <h3>
               Week {w.number} · {w.phase}
               {w.isRecoveryWeek && " · Recovery"}
-              {" · "}{w.totalHours} hrs · TSS {w.totalTSS}
+              {" · "}{w.totalHours} hrs · {Math.round(w.totalKm)} km · TSS {w.totalTSS}
             </h3>
             <table className="print-day-table">
               <tbody>
