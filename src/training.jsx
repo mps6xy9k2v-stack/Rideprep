@@ -617,6 +617,14 @@ function fmtDuration(min) {
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
 }
 
+// Card-style duration: "55 min", "2h 30m", "3h".
+function fmtDurationCard(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `${m} min`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 // Plan starts on the Monday of the user's current week, so day labels feel
 // natural relative to today.
 function planStartDate() {
@@ -634,8 +642,9 @@ function dateForWeekDay(weekNum, dayIdx) {
   return start;
 }
 
+// European D.M. format: 10.6. for June 10.
 function fmtDate(d) {
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  return `${d.getDate()}.${d.getMonth() + 1}.`;
 }
 
 // ── Right-panel: empty state ────────────────────────────────────────────────
@@ -778,6 +787,44 @@ function WeekTabs({ weeks, selected, onSelect }) {
   );
 }
 
+// ── Day card helpers ────────────────────────────────────────────────────────
+
+const WORKOUT_SUBTITLE = {
+  recovery:  "Spin, very light",
+  endurance: "Easy, conversational pace",
+  long:      "Long, steady endurance",
+  tempo:     "Steady, comfortably hard",
+  sweetSpot: "Just below threshold",
+  threshold: "Hard, sustained effort",
+  vo2max:    "Short, very hard intervals",
+  openers:   "Easy, conversational pace",
+};
+
+// Dot count + label keyed by workout type.
+// Long rides are "Moderate" due to total duration stress, not intensity.
+const WORKOUT_DIFFICULTY = {
+  recovery:  { dots: 1, label: "Recovery" },
+  endurance: { dots: 2, label: "Easy" },
+  long:      { dots: 3, label: "Moderate" },
+  tempo:     { dots: 3, label: "Moderate" },
+  sweetSpot: { dots: 3, label: "Moderate" },
+  threshold: { dots: 4, label: "Hard" },
+  vo2max:    { dots: 5, label: "Very hard" },
+  openers:   { dots: 2, label: "Easy" },
+};
+
+function DifficultyDots({ type }) {
+  const { dots, label } = WORKOUT_DIFFICULTY[type] || { dots: 2, label: "Easy" };
+  return (
+    <span className="day-difficulty">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <span key={n} className={"dot" + (n <= dots ? " dot-on" : "")} aria-hidden="true" />
+      ))}
+      <span className="difficulty-label">{label}</span>
+    </span>
+  );
+}
+
 // ── Right-panel: selected week's day cards ──────────────────────────────────
 
 function WeekDays({ week, selectedDay, onSelectDay }) {
@@ -787,7 +834,7 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
       <div className="card-title">
         <h2>Week {week.number}</h2>
         <span className="sub">
-          {week.phase}{week.isRecoveryWeek ? " · Recovery" : ""} · {week.totalHours} hrs · {Math.round(week.totalKm)} km · TSS {week.totalTSS}
+          {week.phase}{week.isRecoveryWeek ? " · Recovery" : ""} · {week.totalHours} hours · {Math.round(week.totalKm)} km · TSS {week.totalTSS}
         </span>
       </div>
 
@@ -804,44 +851,50 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
                   <span className="day-date">{dateLabel}</span>
                 </div>
                 <div className="day-type">Rest</div>
+                <div className="day-subtitle">Off the bike, recover</div>
               </div>
             );
           }
 
           const w = d.workout;
-          // Aggregate minutes per zone for the strip.
-          const zoneMins = {};
-          for (const iv of w.intervals) {
-            zoneMins[iv.zone] = (zoneMins[iv.zone] || 0) + iv.durationMin;
-          }
-          const segs = Object.keys(zoneMins);
-
           return (
             <div
               key={i}
               className={"day-card" + (i === selectedDay ? " selected" : "")}
               onClick={() => onSelectDay(i)}
             >
+              {/* 1. Header */}
               <div className="day-head">
                 <span className="day-dow">{d.day}</span>
                 <span className="day-date">{dateLabel}</span>
               </div>
+
+              {/* 2. Name + 3. Subtitle */}
               <div className="day-type">{w.name}</div>
-              {w.hasClimbingFocus && (
-                <div className="climbing-tag">↑ {w.targetElevation} m target</div>
-              )}
-              <div className="day-metric">{w.distanceKm} km · TSS {w.tss}</div>
-              <div className="zone-strip">
-                {segs.map((zone) => (
-                  <div
-                    key={zone}
-                    className="zone-seg"
-                    style={{
-                      flex: zoneMins[zone],
-                      "--z-color": zoneColor(zone),
-                    }}
-                  />
-                ))}
+              <div className="day-subtitle">{WORKOUT_SUBTITLE[w.type] || ""}</div>
+
+              {/* 4. Stats */}
+              <div className="day-stats">
+                <div className="day-stat">
+                  <span className="day-stat-label">TIME</span>
+                  <span className="day-stat-val">{fmtDurationCard(w.durationMin)}</span>
+                </div>
+                <div className="day-stat">
+                  <span className="day-stat-label">DIST</span>
+                  <span className="day-stat-val">{w.distanceKm} km</span>
+                </div>
+                <div className="day-stat day-stat-climb">
+                  <span className="day-stat-label">CLIMB TARGET</span>
+                  <span className="day-stat-val">
+                    {w.hasClimbingFocus ? `↑ ${w.targetElevation} m` : "—"}
+                  </span>
+                </div>
+              </div>
+
+              {/* 5. Footer: difficulty dots + TSS */}
+              <div className="day-footer">
+                <DifficultyDots type={w.type} />
+                <span className="day-tss">TSS {w.tss}</span>
               </div>
             </div>
           );
