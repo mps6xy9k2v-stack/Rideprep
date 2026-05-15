@@ -421,6 +421,53 @@ function AthleteProfileCard({ inputs, setInputs }) {
   );
 }
 
+// Collapsed-by-default note explaining how each input shapes the plan.
+function InputInfo() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card input-info">
+      <button
+        type="button"
+        className="input-info-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="input-info-icon" aria-hidden="true">i</span>
+        <span>How do these inputs affect my plan?</span>
+        <span className="input-info-chevron" aria-hidden="true">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="input-info-body">
+          <p>
+            <strong>Fitness level or FTP</strong> sets your training intensities
+            and has the biggest effect on the whole plan.
+          </p>
+          <p>
+            <strong>Weeks until your event</strong> and your <strong>weekly
+            hours</strong> decide the plan length, the phase structure, and your
+            weekly training load.
+          </p>
+          <p>
+            <strong>Event type and elevation</strong> shape the workout mix.
+            Hillier events add climbing focus to your rides.
+          </p>
+          <p>
+            <strong>Height and weight</strong> affect your estimated riding
+            speed, which sets the distance of each session. The effect is
+            intentionally small, since in reality body size only modestly
+            changes cycling speed.
+          </p>
+          <p>
+            <strong>Training stress (TSS)</strong> is measured relative to your
+            own threshold, so it stays consistent no matter your fitness level.
+            That is by design.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanOptionsCard({ inputs, setInputs }) {
   const { planOptions } = inputs;
   const setOpts = (patch) =>
@@ -1395,6 +1442,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
       <div className="stack">
         <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} savedTours={savedTours} />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
+        <InputInfo />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
 
         {confirmationState && (
