@@ -114,14 +114,14 @@ a { color: inherit; }
   border-radius: 100px;
 }
 .tab {
-  padding: 6px 14px;
+  padding: 8px 12px;
   border-radius: 100px;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 16px;
+  font-weight: 600;
   color: var(--fg-dim);
   letter-spacing: -0.01em;
   white-space: nowrap;
-  display: flex; align-items: center;
+  display: flex; align-items: center; justify-content: center;
   /* Transition only colour properties — never width-affecting ones. */
   transition: background .18s ease, color .18s ease;
 }
@@ -130,8 +130,8 @@ a { color: inherit; }
    between coloured and transparent backgrounds from shifting tab widths. */
 .tab::before {
   content: attr(data-text);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 16px;
+  font-weight: 600;
   letter-spacing: -0.01em;
   white-space: nowrap;
   visibility: hidden;
@@ -407,7 +407,7 @@ a { color: inherit; }
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 12px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -439,7 +439,7 @@ a { color: inherit; }
   color: var(--fg-faint);
 }
 .day-type {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 500;
   letter-spacing: -0.01em;
   display: -webkit-box;
@@ -471,7 +471,7 @@ a { color: inherit; }
 }
 .day-stat-label {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-faint);
@@ -480,7 +480,7 @@ a { color: inherit; }
 }
 .day-stat-val {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--fg);
   white-space: nowrap;
@@ -488,7 +488,7 @@ a { color: inherit; }
 /* Difficulty dots — its own row below the stats. */
 .day-difficulty-row {
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: 5px;
 }
 .day-difficulty {
   display: flex;
@@ -496,7 +496,7 @@ a { color: inherit; }
   gap: 3px;
 }
 .dot {
-  width: 7px; height: 7px;
+  width: 8px; height: 8px;
   border-radius: 50%;
   background: var(--line-strong);
   display: inline-block;
@@ -505,14 +505,14 @@ a { color: inherit; }
 .dot.dot-on { background: var(--accent); }
 .difficulty-label {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg-dim);
   margin-left: 4px;
 }
 /* TSS — its own row at the very bottom. */
 .day-tss-row {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg-faint);
 }
 
@@ -1622,11 +1622,6 @@ input[type="range"]::-moz-range-thumb {
   background: var(--accent);
   color: var(--accent-ink);
 }
-.week-tab.is-recovery::after {
-  content: "·";
-  margin-left: 4px;
-  color: var(--warm);
-}
 
 .rest-placeholder {
   padding: 28px 20px;
@@ -1982,14 +1977,14 @@ input[type="range"]::-moz-range-thumb {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 10px;
+  gap: 16px;
 }
 .nutr-tips li {
   position: relative;
   padding-left: 18px;
   font-size: 14px;
   color: var(--fg-dim);
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .nutr-tips li::before {
   content: "–";
