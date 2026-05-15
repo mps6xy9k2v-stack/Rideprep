@@ -923,38 +923,46 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
 //   J. Physiol.
 function RestDayDetail() {
   return (
-    <div className="card workout-detail">
-      <div className="rest-detail">
-        <h3>Rest day</h3>
-        <p className="rest-detail-sub">Why this matters</p>
-        <p className="rest-detail-body">
+    <div className="card">
+      <div className="panel-head">
+        <h2>Rest day</h2>
+        <p className="panel-sub">Why this matters</p>
+      </div>
+      <div className="panel-body">
+        <p className="panel-body-text">
           Rest days are when your body adapts to training. Adaptation happens
           during recovery, not during the workout itself. Skipping recovery does
           not make you faster, it accumulates fatigue and increases injury risk.
         </p>
 
-        <h4>What to focus on</h4>
-        <ul className="rest-detail-list">
-          <li><strong>Sleep 7 to 9 hours.</strong> The single most important recovery factor.</li>
-          <li>Keep drinking water and electrolytes through the day.</li>
-          <li>Move gently. Light activity beats complete stillness for circulation and muscle repair.</li>
-          <li>Stretch or use a foam roller for 10 to 15 minutes if you feel stiff.</li>
-        </ul>
+        <div className="panel-section">
+          <h4 className="panel-section-head">What to focus on</h4>
+          <ul className="panel-list">
+            <li><strong>Sleep 7 to 9 hours.</strong> The single most important recovery factor.</li>
+            <li>Keep drinking water and electrolytes through the day.</li>
+            <li>Move gently. Light activity beats complete stillness for circulation and muscle repair.</li>
+            <li>Stretch or use a foam roller for 10 to 15 minutes if you feel stiff.</li>
+          </ul>
+        </div>
 
-        <h4>Recommended activities</h4>
-        <ul className="rest-detail-list">
-          <li>A walk of 30 to 60 minutes at a comfortable pace</li>
-          <li>Easy swimming or light yoga</li>
-          <li>Foam rolling, mobility work, gentle stretching</li>
-          <li>A 15 to 20 minute sauna session can support circulation and reduce perceived soreness</li>
-        </ul>
+        <div className="panel-section">
+          <h4 className="panel-section-head">Recommended activities</h4>
+          <ul className="panel-list">
+            <li>A walk of 30 to 60 minutes at a comfortable pace</li>
+            <li>Easy swimming or light yoga</li>
+            <li>Foam rolling, mobility work, gentle stretching</li>
+            <li>A 15 to 20 minute sauna session can support circulation and reduce perceived soreness</li>
+          </ul>
+        </div>
 
-        <h4>Avoid</h4>
-        <ul className="rest-detail-list">
-          <li>High-intensity workouts of any kind</li>
-          <li>Long or hard rides</li>
-          <li>Sitting completely still all day, which slows circulation</li>
-        </ul>
+        <div className="panel-section">
+          <h4 className="panel-section-head">Avoid</h4>
+          <ul className="panel-list">
+            <li>High-intensity workouts of any kind</li>
+            <li>Long or hard rides</li>
+            <li>Sitting completely still all day, which slows circulation</li>
+          </ul>
+        </div>
       </div>
     </div>
   );
@@ -1257,9 +1265,9 @@ function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
 
   return (
     <div className="card">
-      <div className="card-title">
+      <div className="panel-head">
         <h2>Nutrition tips</h2>
-        <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
+        <p className="panel-sub">Guidance, not a meal plan. Adjust to your body and preferences.</p>
       </div>
       {isRestDay ? (
         <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
@@ -1276,7 +1284,7 @@ function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
           ))}
         </div>
       )}
-      <ul className="nutr-tips">
+      <ul className="panel-list">
         {tips.map((tip, i) => (
           <li key={i}>{tip}</li>
         ))}

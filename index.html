@@ -114,32 +114,29 @@ a { color: inherit; }
   border-radius: 100px;
 }
 .tab {
-  padding: 8px 12px;
+  display: grid;
+  place-items: center;
+  padding: 9px 16px;
   border-radius: 100px;
   font-size: 16px;
   font-weight: 600;
   color: var(--fg-dim);
   letter-spacing: -0.01em;
   white-space: nowrap;
-  display: flex; align-items: center; justify-content: center;
   /* Transition only colour properties — never width-affecting ones. */
   transition: background .18s ease, color .18s ease;
 }
-/* Reserve exactly the width the active (same font-weight) text will occupy.
-   This hidden ::before block prevents any subpixel rendering difference
-   between coloured and transparent backgrounds from shifting tab widths. */
+/* Invisible sizer fixed to the widest label, stacked in the same grid cell
+   as the visible label. Every tab reserves "Tour Planner" width, so all
+   three tabs are identical size and the label sits dead centre. */
 .tab::before {
-  content: attr(data-text);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
+  content: "Tour Planner";
+  grid-area: 1 / 1;
+  font: inherit;
   visibility: hidden;
-  height: 0;
-  overflow: hidden;
   pointer-events: none;
-  display: block;
 }
+.tab-label { grid-area: 1 / 1; }
 .tab:hover { color: var(--fg); }
 .tab[aria-selected="true"] {
   background: var(--accent);
@@ -303,9 +300,10 @@ a { color: inherit; }
   flex-wrap: nowrap;
   gap: 0 40px;
   padding-right: 44px;
-  overflow-x: auto;
   position: relative;
   z-index: 10;  /* sit above phase-strip sibling (also z-index:1 from plan-hero > *) */
+  /* No overflow here: overflow-x:auto forces overflow-y to auto too, which
+     clips the bottom of tip-bottom tooltips. clamp() keeps the row fitting. */
 }
 .plan-meta-cell {
   display: flex;
@@ -619,7 +617,9 @@ a { color: inherit; }
   font-size: 13px;
 }
 .zone-swatch { width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; }
-.zone-row .tip-wrap { overflow: hidden; }
+/* min-width:0 lets the grid item shrink so .tip-trigger can ellipsis,
+   without overflow:hidden clipping the tooltip popover. */
+.zone-row .tip-wrap { min-width: 0; }
 .zone-row .tip-trigger { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .zone-range {
   font-family: var(--mono); font-size: 11px; color: var(--fg-dim);
@@ -1631,54 +1631,61 @@ input[type="range"]::-moz-range-thumb {
   font-style: italic;
   font-size: 17px;
 }
-.rest-detail { display: grid; gap: 16px; }
-.rest-detail h3 {
-  margin: 0 0 6px 0;
-  font-size: 26px;
+/* Shared panel typography — Rest day and Nutrition tips read as siblings. */
+.panel-head { margin-bottom: 16px; }
+.panel-head h2 {
+  margin: 0;
   font-weight: 500;
+  font-size: 20px;
   letter-spacing: -0.02em;
 }
-.rest-detail h4 {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-dim);
-}
-.rest-detail-sub {
-  margin: 0;
+.panel-sub {
+  margin: 4px 0 0 0;
   font-family: var(--serif);
   font-style: italic;
   font-size: 15px;
   color: var(--fg-dim);
 }
-.rest-detail-body {
+.panel-body { display: grid; gap: 18px; }
+.panel-body-text {
   margin: 0;
   font-size: 14px;
   line-height: 1.55;
   color: var(--fg-dim);
 }
-.rest-detail-list {
+.panel-section { display: grid; gap: 8px; }
+.panel-section-head {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+.panel-list {
   margin: 0;
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 8px;
-  color: var(--fg-dim);
+  gap: 14px;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
+  color: var(--fg-dim);
 }
-.rest-detail-list li {
+.panel-list li {
   position: relative;
   padding-left: 18px;
 }
-.rest-detail-list li::before {
+.panel-list li::before {
   content: "–";
   position: absolute;
   left: 0;
   color: var(--fg-faint);
+}
+.panel-list strong {
+  color: var(--fg);
+  font-weight: 600;
 }
 
 /* ========== TOUR PICKER (training event setup) ========== */
@@ -1972,26 +1979,6 @@ input[type="range"]::-moz-range-thumb {
   color: var(--accent-ink);
   border-color: var(--accent);
 }
-.nutr-tips {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 16px;
-}
-.nutr-tips li {
-  position: relative;
-  padding-left: 18px;
-  font-size: 14px;
-  color: var(--fg-dim);
-  line-height: 1.55;
-}
-.nutr-tips li::before {
-  content: "–";
-  position: absolute;
-  left: 0;
-  color: var(--fg-faint);
-}
 .nutr-note {
   padding: 10px 14px;
   border-radius: var(--radius);
@@ -2003,7 +1990,7 @@ input[type="range"]::-moz-range-thumb {
   font-style: italic;
 }
 .nutr-rest-note {
-  margin: 0;
+  margin: 0 0 16px 0;
   font-size: 12px;
   color: var(--fg-faint);
   font-family: var(--serif);

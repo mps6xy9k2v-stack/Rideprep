@@ -72,29 +72,26 @@ function App() {
           <button
             role="tab"
             className="tab"
-            data-text="Training"
             aria-selected={tab === "training"}
             onClick={() => setTab("training")}
           >
-            Training
+            <span className="tab-label">Training</span>
           </button>
           <button
             role="tab"
             className="tab"
-            data-text="Tour Planner"
             aria-selected={tab === "tour"}
             onClick={() => setTab("tour")}
           >
-            Tour Planner
+            <span className="tab-label">Tour Planner</span>
           </button>
           <button
             role="tab"
             className="tab"
-            data-text="Weather"
             aria-selected={tab === "weather"}
             onClick={() => setTab("weather")}
           >
-            Weather
+            <span className="tab-label">Weather</span>
           </button>
         </div>
         <div className="header-meta">
