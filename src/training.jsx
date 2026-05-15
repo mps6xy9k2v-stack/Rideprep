@@ -672,7 +672,6 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const peak = pickPeakWeek(weeks);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
-  const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
   const tssNote = "TSS measures the stress of a week's training. Higher means harder.";
 
   return (
@@ -685,32 +684,26 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
       >?</button>
 
       <div className="plan-meta">
-        <div>
+        <div className="plan-meta-cell">
           <span className="label">Plan</span>
           <span className="big">{meta.weeksUntilEvent} weeks</span>
         </div>
-        <div>
+        <div className="plan-meta-cell">
           <span className="label">Focus</span>
           <span className="val">{focus}</span>
         </div>
-        <div>
-          <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
-          <span className="val">{Math.round(totalHours)} hrs</span>
-        </div>
-        <div>
-          <Tooltip content={TIP.totalDistance} side="bottom"><span className="label tip-trigger">Total distance</span></Tooltip>
-          <span className="val">{Math.round(totalKm).toLocaleString()} km</span>
-        </div>
-        <div>
+        <div className="plan-meta-cell">
           <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
           <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
-        {tierLabel && (
-          <div>
-            <Tooltip content={TIP.climbing} side="bottom"><span className="label tip-trigger">Climbing</span></Tooltip>
-            <span className="val">{tierLabel} · {meta.climbingDensity} m/km</span>
-          </div>
-        )}
+        <div className="plan-meta-cell">
+          <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
+          <span className="val">{Math.round(totalHours)} hrs</span>
+        </div>
+        <div className="plan-meta-cell">
+          <Tooltip content={TIP.totalDistance} side="bottom"><span className="label tip-trigger">Total distance</span></Tooltip>
+          <span className="val">{Math.round(totalKm).toLocaleString()} km</span>
+        </div>
       </div>
 
       <div className="phase-strip">
@@ -845,13 +838,22 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
 
           if (!d.workout) {
             return (
-              <div key={i} className="day-card day-rest">
+              <div
+                key={i}
+                className={"day-card day-rest" + (i === selectedDay ? " selected" : "")}
+                onClick={() => onSelectDay(i)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onSelectDay(i); }}
+              >
                 <div className="day-head">
                   <span className="day-dow">{d.day}</span>
                   <span className="day-date">{dateLabel}</span>
                 </div>
-                <div className="day-type">Rest</div>
-                <div className="day-subtitle">Off the bike, recover</div>
+                <div className="day-rest-body">
+                  <div className="day-type">Rest</div>
+                  <div className="day-subtitle">Off the bike, recover</div>
+                </div>
               </div>
             );
           }
@@ -869,36 +871,87 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
                 <span className="day-date">{dateLabel}</span>
               </div>
 
-              {/* 2. Name + 3. Subtitle */}
+              {/* 2. Name + subtitle */}
               <div className="day-type">{w.name}</div>
               <div className="day-subtitle">{WORKOUT_SUBTITLE[w.type] || ""}</div>
 
-              {/* 4. Stats */}
+              {/* 3. Vertical stat rows: TIME / DISTANCE / CLIMBING */}
               <div className="day-stats">
-                <div className="day-stat">
+                <div className="day-stat-row">
                   <span className="day-stat-label">TIME</span>
                   <span className="day-stat-val">{fmtDurationCard(w.durationMin)}</span>
                 </div>
-                <div className="day-stat">
-                  <span className="day-stat-label">DIST</span>
+                <div className="day-stat-row">
+                  <span className="day-stat-label">DISTANCE</span>
                   <span className="day-stat-val">{w.distanceKm} km</span>
                 </div>
-                <div className="day-stat day-stat-climb">
-                  <span className="day-stat-label">CLIMB TARGET</span>
+                <div className="day-stat-row">
+                  <span className="day-stat-label">CLIMBING</span>
                   <span className="day-stat-val">
                     {w.hasClimbingFocus ? `↑ ${w.targetElevation} m` : "—"}
                   </span>
                 </div>
               </div>
 
-              {/* 5. Footer: difficulty dots + TSS */}
-              <div className="day-footer">
+              {/* 4. Difficulty dots on its own row */}
+              <div className="day-difficulty-row">
                 <DifficultyDots type={w.type} />
-                <span className="day-tss">TSS {w.tss}</span>
               </div>
+
+              {/* 5. TSS on its own row */}
+              <div className="day-tss-row">TSS {w.tss}</div>
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// Recovery content sources (code review reference only, not user-facing):
+// - St. Pierre, P. et al. (2018). Active vs passive recovery and
+//   subsequent exercise performance. J. Strength Cond. Res.
+// - Mero, A. et al. (2015). Effects of post-exercise sauna bathing on
+//   recovery of athletes. Springer Plus.
+// - Laukkanen, J.A. et al. Sauna bathing is associated with reduced
+//   cardiovascular mortality. JAMA Intern. Med. (2015).
+// - Areta, J.L. et al. (2013). Timing and distribution of protein
+//   ingestion during prolonged recovery from resistance exercise.
+//   J. Physiol.
+function RestDayDetail() {
+  return (
+    <div className="card workout-detail">
+      <div className="rest-detail">
+        <h3>Rest day</h3>
+        <p className="rest-detail-sub">Why this matters</p>
+        <p className="rest-detail-body">
+          Rest days are when your body adapts to training. Adaptation happens
+          during recovery, not during the workout itself. Skipping recovery does
+          not make you faster, it accumulates fatigue and increases injury risk.
+        </p>
+
+        <h4>What to focus on</h4>
+        <ul className="rest-detail-list">
+          <li><strong>Sleep 7 to 9 hours.</strong> The single most important recovery factor.</li>
+          <li>Keep drinking water and electrolytes through the day.</li>
+          <li>Move gently. Light activity beats complete stillness for circulation and muscle repair.</li>
+          <li>Stretch or use a foam roller for 10 to 15 minutes if you feel stiff.</li>
+        </ul>
+
+        <h4>Recommended activities</h4>
+        <ul className="rest-detail-list">
+          <li>A walk of 30 to 60 minutes at a comfortable pace</li>
+          <li>Easy swimming or light yoga</li>
+          <li>Foam rolling, mobility work, gentle stretching</li>
+          <li>A 15 to 20 minute sauna session can support circulation and reduce perceived soreness</li>
+        </ul>
+
+        <h4>Avoid</h4>
+        <ul className="rest-detail-list">
+          <li>High-intensity workouts of any kind</li>
+          <li>Long or hard rides</li>
+          <li>Sitting completely still all day, which slows circulation</li>
+        </ul>
       </div>
     </div>
   );
@@ -925,11 +978,10 @@ function WorkoutDetail({ week, dayIndex, fitnessMode }) {
   }, [workout]);
 
   if (!workout) {
+    if (day) return <RestDayDetail />;
     return (
       <div className="card workout-detail">
-        <div className="rest-placeholder">
-          {day ? `${day.day} — rest day, no workout scheduled` : "Select a day to see its workout"}
-        </div>
+        <div className="rest-placeholder">Select a day to see its workout</div>
       </div>
     );
   }
@@ -1026,7 +1078,16 @@ function zoneDetail(zoneId, fitnessMode) {
     : (ZONES_LABEL_FTP[zoneId] || "");
 }
 
-// ── Nutrition tips data ──────────────────────────────────────────────────────
+// ── Nutrition tips data ─────────────────────────────────────────────────────
+//
+// Recovery nutrition sources (code review reference only, not user-facing):
+// - Thomas, D.T. et al. (2016). Position of the Academy of Nutrition and
+//   Dietetics: Nutrition and Athletic Performance. J. Acad. Nutr. Diet.
+// - Ivy, J.L. & Portman, R. (2004). Nutrient Timing. Basic Health Pub.
+// - Areta, J.L. et al. (2013). Timing and distribution of protein ingestion.
+//   J. Physiol.
+// - Halson, S.L. (2014). Sleep in elite athletes and nutritional interventions
+//   to enhance sleep. Sports Med.
 
 const _prepBaseTips = [
   "Carbohydrates are your main fuel on training days. Aim for 5-7 g per kg body weight.",
@@ -1071,6 +1132,14 @@ const NUTRITION_TIPS_DATA = {
     "Don't undereat. Training raises your calorie needs.",
     "Recovery happens when you rest. Sleep is part of fueling.",
     "Whole foods first. Supplements only fill specific gaps.",
+  ],
+  "Rest Day": [
+    "Protein intake stays consistent. Aim for 1.4 to 1.7 g per kg body weight, spread across meals.",
+    "Slightly reduce overall carbohydrate intake compared to training days, but do not cut carbs entirely. Around 3 to 5 g per kg body weight works for most riders.",
+    "Hydration stays critical. Drink consistently through the day.",
+    "Prioritise whole foods: lean protein, vegetables, fruit, whole grains, healthy fats.",
+    "Limit alcohol. It impairs sleep quality and protein synthesis, both of which matter on recovery days.",
+    "A small protein-rich snack before bed can support overnight muscle repair (20 to 30 g casein or similar slow protein).",
   ],
 };
 
@@ -1172,13 +1241,16 @@ function GlossaryModal({ onClose }) {
 
 // ── Nutrition tips card ──────────────────────────────────────────────────────
 
-function NutritionTips({ plan, currentWeekPhase }) {
+function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
   const phaseTabs = plan.phases.map((p) => p.name);
   const allTabs = [...phaseTabs, "Race Day", "General"];
   const defaultTab = phaseTabs.includes(currentWeekPhase) ? currentWeekPhase : phaseTabs[0];
   const [activeTab, setActiveTab] = useState(defaultTab);
 
-  const tips = NUTRITION_TIPS_DATA[activeTab] || NUTRITION_TIPS_DATA["General"];
+  // When a rest day is selected show rest-day nutrition; when switching
+  // back to a training day the user-chosen phase tab takes over again.
+  const displayTab = isRestDay ? "Rest Day" : activeTab;
+  const tips = NUTRITION_TIPS_DATA[displayTab] || NUTRITION_TIPS_DATA["General"];
 
   return (
     <div className="card">
@@ -1186,17 +1258,21 @@ function NutritionTips({ plan, currentWeekPhase }) {
         <h2>Nutrition tips</h2>
         <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
       </div>
-      <div className="nutr-tabs">
-        {allTabs.map((tab) => (
-          <button
-            key={tab}
-            className={"nutr-tab" + (tab === activeTab ? " active" : "")}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
+      {isRestDay ? (
+        <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
+      ) : (
+        <div className="nutr-tabs">
+          {allTabs.map((tab) => (
+            <button
+              key={tab}
+              className={"nutr-tab" + (tab === activeTab ? " active" : "")}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      )}
       <ul className="nutr-tips">
         {tips.map((tip, i) => (
           <li key={i}>{tip}</li>
@@ -1597,6 +1673,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
             <NutritionTips
               plan={generatedPlan}
               currentWeekPhase={currentWeek && currentWeek.phase}
+              isRestDay={currentWeek && selectedDay != null && !currentWeek.days[selectedDay]?.workout}
             />
             <div className="plan-actions">
               <button
