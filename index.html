@@ -77,11 +77,16 @@ a { color: inherit; }
 
 /* ========== HEADER ========== */
 .header {
-  display: flex;
+  /* 3-column grid: brand | tabs | meta.
+     The centre column is auto-sized and centred so neither Brand nor
+     header-meta can push the tabs sideways when their own content changes. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
 }
+.header .tabs { justify-self: center; }
+.header .header-meta { justify-self: end; }
 .brand {
   display: flex;
   align-items: center;
@@ -115,8 +120,25 @@ a { color: inherit; }
   font-weight: 500;
   color: var(--fg-dim);
   letter-spacing: -0.01em;
+  white-space: nowrap;
   display: flex; align-items: center; gap: 8px;
-  transition: all .18s ease;
+  /* Transition only colour properties — never width-affecting ones. */
+  transition: background .18s ease, color .18s ease;
+}
+/* Reserve exactly the width the active (same font-weight) text will occupy.
+   This hidden ::before block prevents any subpixel rendering difference
+   between coloured and transparent backgrounds from shifting tab widths. */
+.tab::before {
+  content: attr(data-text);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  display: block;
 }
 .tab:hover { color: var(--fg); }
 .tab[aria-selected="true"] {
