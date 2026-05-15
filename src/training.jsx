@@ -693,16 +693,16 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
           <span className="val">{focus}</span>
         </div>
         <div className="plan-meta-cell">
-          <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
-          <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
-        </div>
-        <div className="plan-meta-cell">
           <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
           <span className="val">{Math.round(totalHours)} hrs</span>
         </div>
         <div className="plan-meta-cell">
           <Tooltip content={TIP.totalDistance} side="bottom"><span className="label tip-trigger">Total distance</span></Tooltip>
           <span className="val">{Math.round(totalKm).toLocaleString()} km</span>
+        </div>
+        <div className="plan-meta-cell">
+          <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
+          <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
       </div>
 
@@ -831,7 +831,10 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
         </span>
       </div>
 
-      <div className="week-grid">
+      <div
+        className="week-grid"
+        style={{ "--week-cols": week.days.map(d => d.workout ? "1.3fr" : "1fr").join(" ") }}
+      >
         {week.days.map((d, i) => {
           const date = dateForWeekDay(week.number, i);
           const dateLabel = fmtDate(date);

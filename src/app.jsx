@@ -76,7 +76,6 @@ function App() {
             aria-selected={tab === "training"}
             onClick={() => setTab("training")}
           >
-            <span className="tab-dot" />
             Training
           </button>
           <button
@@ -86,7 +85,6 @@ function App() {
             aria-selected={tab === "tour"}
             onClick={() => setTab("tour")}
           >
-            <span className="tab-dot" />
             Tour Planner
           </button>
           <button
@@ -96,7 +94,6 @@ function App() {
             aria-selected={tab === "weather"}
             onClick={() => setTab("weather")}
           >
-            <span className="tab-dot" />
             Weather
           </button>
         </div>
