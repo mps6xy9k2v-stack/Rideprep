@@ -1266,9 +1266,7 @@ function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
           <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
         </div>
         <p className="panel-sub">Why this also matters on Rest Days</p>
-        {isRestDay ? (
-          <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
-        ) : (
+        {!isRestDay && (
           <div className="nutr-tabs">
             {allTabs.map((tab) => (
               <button
