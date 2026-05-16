@@ -2019,13 +2019,14 @@ input[type="range"]::-moz-range-thumb {
 .wx3-left { display: grid; gap: 14px; align-content: start; }
 .wx3-right { display: grid; gap: 16px; min-width: 0; }
 
-/* ---------- Route map (Leaflet, adaptive aspect) ----------
-   Default aspect is 2.5:1; React component overrides this inline based
-   on the route's bounding box (taller for north-south, wider for east-west). */
+/* ---------- Route map (Leaflet, adaptive height) ----------
+   The React component sets an inline height computed from the route's
+   bounding box and the container width. The 400px default below is only
+   used briefly before measurement runs. */
 .wx3-map {
   position: relative;
   width: 100%;
-  aspect-ratio: 2.5 / 1;
+  height: 400px;
   background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2343,78 +2344,119 @@ input[type="range"]::-moz-range-thumb {
 /* Left-column extras — tour outlook visual card */
 .wx3-outlook-note { font-family: var(--serif); font-style: italic; color: var(--fg-dim); font-size: 13px; line-height: 1.4; }
 
-.wx3-outlook2 { display: grid; gap: 14px; }
+.wx3-outlook2 { display: grid; gap: 16px; }
 
-.wx3-stat-tiles {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
-}
-.wx3-stat-tiles .tile {
-  display: grid; justify-items: center; gap: 3px;
-  padding: 10px 4px;
-  background: color-mix(in oklch, var(--accent) 7%, var(--bg));
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  text-align: center;
-}
-.wx3-stat-tiles .tile .ic { color: var(--accent); display: grid; place-items: center; }
-.wx3-stat-tiles .tile .val { font-family: var(--mono); font-size: 14px; color: var(--fg); }
-.wx3-stat-tiles .tile .lbl {
-  font-family: var(--mono); font-size: 8px; color: var(--fg-faint);
-  text-transform: uppercase; letter-spacing: 0.08em;
+/* Italic-serif character line — same voice as stage detail headlines. */
+.wx3-outlook-char {
+  margin: 0;
+  font-family: var(--serif); font-style: italic; font-weight: 400;
+  font-size: 17px; line-height: 1.35;
+  color: var(--fg);
 }
 
-.wx3-bestworst { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.wx3-bw-card {
-  display: grid; gap: 3px; text-align: left;
-  padding: 10px 12px;
-  background: color-mix(in oklch, var(--ok) 8%, var(--bg));
+/* Horizontal strip of stage tiles. Scrolls when too many stages to fit. */
+.wx3-tour-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(54px, 1fr);
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.tour-tile {
+  display: grid; justify-items: center; gap: 4px;
+  padding: 10px 4px 8px;
+  background: color-mix(in oklch, var(--accent) 6%, var(--bg));
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   cursor: pointer;
   color: inherit;
   font-family: inherit;
+  text-align: center;
+  min-width: 0;
   transition: border-color .15s ease, transform .15s ease, background .15s ease;
 }
-.wx3-bw-card.tough { background: color-mix(in oklch, var(--warm) 10%, var(--bg)); }
-.wx3-bw-card:hover { border-color: var(--line-strong); transform: translateY(-1px); }
-.wx3-bw-card .hdr {
+.tour-tile:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.tour-tile.active {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 14%, var(--bg));
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 35%, transparent);
+}
+.tour-tile.climate { opacity: 0.78; filter: saturate(0.6); }
+.tour-tile .n {
   font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
   text-transform: uppercase; letter-spacing: 0.08em;
 }
-.wx3-bw-card .stg { font-family: var(--mono); font-size: 11px; color: var(--accent); }
-.wx3-bw-card .city {
-  font-size: 13px; color: var(--fg); font-weight: 500;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.tour-tile .ic { color: var(--warm); display: grid; place-items: center; }
+.tour-tile .ic.cool { color: var(--accent); }
+.tour-tile .ic .dash { font-family: var(--mono); font-size: 12px; color: var(--fg-faint); }
+.tour-tile .t { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+/* Rain magnitude bar — 4px tall blue fill proportional to stage rain. */
+.tour-tile .bar {
+  width: 100%; height: 4px; margin-top: 2px;
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+  border-radius: 2px;
+  overflow: hidden;
 }
-.wx3-bw-card .cond { font-family: var(--mono); font-size: 10px; color: var(--fg-dim); }
+.tour-tile .bar .fill {
+  display: block; height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width .2s ease;
+}
 
-.wx3-glance { display: grid; gap: 4px; margin-top: 4px; }
-.wx3-glance .lbl {
+/* Heads up list */
+.wx3-headsup { display: grid; gap: 6px; margin-top: 2px; }
+.wx3-headsup .hdr {
   font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
   text-transform: uppercase; letter-spacing: 0.08em;
+  margin-bottom: 2px;
 }
-.wx3-glance .dots { display: flex; gap: 4px; }
-.wx3-glance .nums {
-  display: flex; gap: 4px;
-  font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
+.wx3-headsup .flag {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  background: color-mix(in oklch, var(--warm) 8%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--warm) 22%, var(--line));
+  border-radius: var(--radius-sm);
+  font-size: 12px; color: var(--fg);
 }
-.wx3-glance .nums span,
-.wx3-glance .dot {
-  flex: 1; min-width: 12px;
+.wx3-headsup .flag .emoji { font-size: 14px; line-height: 1; }
+
+/* Climate fallback banner — shown above the map when the event is more
+   than 16 days away. Tinted accent background, info icon, two lines of
+   copy and a small "X days to go" cap on the right. */
+.wx3-climate-banner {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  background: color-mix(in oklch, var(--accent) 14%, var(--bg-1));
+  border: 1px solid color-mix(in oklch, var(--accent) 28%, var(--line));
+  border-radius: var(--radius-lg);
+}
+.wx3-climate-banner .ico {
+  color: var(--accent);
   display: grid; place-items: center;
 }
-.wx3-glance .dot {
-  height: 14px; border-radius: 50%;
-  cursor: pointer; border: 1.5px solid transparent;
-  padding: 0;
-  transition: transform .12s ease, border-color .12s ease;
+.wx3-climate-banner .txt { display: grid; gap: 2px; min-width: 0; }
+.wx3-climate-banner .main {
+  font-size: 14px; font-weight: 500;
+  color: var(--fg);
 }
-.wx3-glance .dot:hover { transform: scale(1.25); }
-.wx3-glance .dot.active { border-color: var(--fg); }
-.wx3-glance .dot.sunny   { background: var(--warm); }
-.wx3-glance .dot.cloudy  { background: color-mix(in oklch, var(--accent) 55%, var(--bg-2)); }
-.wx3-glance .dot.rain    { background: var(--accent); }
-.wx3-glance .dot.unknown { background: var(--fg-faint); opacity: 0.45; }
+.wx3-climate-banner .sub {
+  font-size: 12px; color: var(--fg-dim); line-height: 1.45;
+}
+.wx3-climate-banner .cap {
+  font-family: var(--mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .wx3-climate-banner { grid-template-columns: auto 1fr; }
+  .wx3-climate-banner .cap { grid-column: 1 / -1; text-align: right; }
+}
 
 .wx3-tips { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .wx3-tips li {

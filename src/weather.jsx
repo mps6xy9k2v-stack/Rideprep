@@ -45,6 +45,10 @@ function fmtFullDate(date) {
   const d = new Date(date);
   return `${fmtDow(d).toUpperCase()} ${d.getDate()} ${["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][d.getMonth()]} ${d.getFullYear()}`;
 }
+function fmtFriendlyDate(date) {
+  const d = new Date(date);
+  return `${d.getDate()} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()]} ${d.getFullYear()}`;
+}
 function fmtClock(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -72,27 +76,42 @@ function shortCity(s) {
   return (i >= 0 ? String(s).slice(0, i) : String(s)).trim();
 }
 
-// Compute an adaptive aspect ratio for the route map based on the route's
-// bounding box. Wide east-west routes stay wide; tall north-south routes
-// get a taller container so they don't look cramped.
-function routeAspectCss(stops) {
+// Geographic shape of the route, used to size the map. routeAspect is
+// (east-west km) / (north-south km), so > 1 = horizontal, < 1 = vertical.
+function routeMetrics(stops) {
   const pts = (stops || []).filter((s) => s && s.lat != null && s.lng != null);
-  if (pts.length < 2) return "2.5 / 1";
-  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-  pts.forEach((p) => {
-    if (p.lat < minLat) minLat = p.lat;
-    if (p.lat > maxLat) maxLat = p.lat;
-    if (p.lng < minLng) minLng = p.lng;
-    if (p.lng > maxLng) maxLng = p.lng;
-  });
-  const latSpan = Math.max(maxLat - minLat, 0.001);
-  const meanLatRad = ((maxLat + minLat) / 2) * Math.PI / 180;
-  const lngSpan = Math.max((maxLng - minLng) * Math.cos(meanLatRad), 0.001);
-  const a = lngSpan / latSpan;
-  if (a > 2.0) return "2.5 / 1";
-  if (a >= 1.0) return "2 / 1";
-  if (a >= 0.5) return "4 / 3";
-  return "4 / 5";
+  if (pts.length < 2) return { routeAspect: 1.6 };
+  const lats = pts.map((p) => p.lat);
+  const lngs = pts.map((p) => p.lng);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const meanLat = (minLat + maxLat) / 2;
+  const latSpan = maxLat - minLat;
+  const lngSpan = maxLng - minLng;
+  const lngSpanCorrected = lngSpan * Math.cos(meanLat * Math.PI / 180);
+  const routeAspect = Math.max(0.05, lngSpanCorrected / Math.max(0.01, latSpan));
+  return { routeAspect, minLat, maxLat, minLng, maxLng };
+}
+
+// Adaptive map height. The container's aspect is picked from the route's
+// shape, then we make sure vertical routes have enough room to space the
+// stage markers down the height of the map.
+function computeMapHeight(stages, containerWidth) {
+  const located = (stages || []).filter((s) => s && s.lat != null && s.lng != null);
+  if (located.length < 2 || !containerWidth) return 400;
+  const { routeAspect } = routeMetrics(located);
+  let containerAspect;
+  if (routeAspect >= 2.5)      containerAspect = 2.6;
+  else if (routeAspect >= 1.5) containerAspect = 2.1;
+  else if (routeAspect >= 0.8) containerAspect = 1.4;
+  else if (routeAspect >= 0.4) containerAspect = 0.9;
+  else                         containerAspect = 0.65;
+  let height = containerWidth / containerAspect;
+  // Vertical routes need ~75px per stage so labels don't pile up.
+  if (routeAspect < 1.0) {
+    height = Math.max(height, located.length * 75 + 120);
+  }
+  return Math.max(320, Math.min(800, height));
 }
 
 // Short condition summary used in best/toughest cards in the Tour outlook.
@@ -338,59 +357,97 @@ function makeHeadline(daily, hourly) {
   return body;
 }
 
-// ---------- Tour-level aggregates & packing tips ----------
-// Map a weathercode to one of four dot colors used in the tour-at-a-glance
-// row. Anything missing (no forecast entry, or climate-only) returns "unknown".
-function glanceColorFromCode(code) {
-  if (code == null) return "unknown";
-  if (code === 0 || code <= 2) return "sunny";
-  if (code <= 48) return "cloudy";
-  return "rain";
+// ---------- Tour outlook data ----------
+// One italic-serif sentence that captures the character of the whole tour.
+// Rules cascade in priority order; first match wins.
+function tourCharacterLine(stops, cache, tour) {
+  if (!stops || !tour) return null;
+  const all = stops.map((s, i) => ({ s, i, entry: cache[cacheKey(i, s.date, tour.id)] }));
+  const fc = all.filter((x) => x.s.kind === "forecast" && x.entry && x.entry.daily);
+  if (!fc.length) {
+    const cl = all.filter((x) => x.s.kind === "climate" && x.entry && x.entry.climate);
+    if (!cl.length) return null;
+    const month = monthName(new Date(stops[0].date).getMonth());
+    const meanH = mean(cl.map((x) => x.entry.climate.meanHigh));
+    const meanRain = mean(cl.map((x) => x.entry.climate.monthRainMm));
+    const temp = meanH == null ? "mild" : meanH > 22 ? "warm" : meanH >= 15 ? "mild" : "cool";
+    const rain = meanRain == null ? "mixed conditions" : meanRain > 80 ? "with significant rain" : meanRain > 40 ? "with some rain" : "mostly dry";
+    return `Typical ${month} weather, ${temp} ${rain}.`;
+  }
+  const highs = fc.map((x) => x.entry.daily.temperature_2m_max);
+  const avgHigh = mean(highs);
+  const minHigh = Math.min(...highs);
+  const maxHigh = Math.max(...highs);
+  const totalRain = sumArr(fc.map((x) => x.entry.daily.precipitation_sum || 0));
+  const wetStages = fc.filter((x) => (x.entry.daily.precipitation_sum || 0) > 0.5);
+  const wetCount = wetStages.length;
+  const total = fc.length;
+  if (totalRain < 1 && avgHigh > 22) return "Warm and sunny throughout.";
+  if (totalRain < 1 && avgHigh >= 15) return "Mild and dry the whole way.";
+  if (totalRain < 1) return "Cool but dry across all stages.";
+  if (wetCount > 0 && wetCount <= 2) {
+    const days = wetStages.map((x) => fmtDow(x.s.date)).join(" and ");
+    return `Mostly dry, with light rain on ${days}.`;
+  }
+  if (wetCount > total / 2) return "Wet tour, plan for rain on most days.";
+  if ((maxHigh - minHigh) > 8) return "Mixed conditions, big temperature swings across the week.";
+  return "Mixed conditions, plan for variable weather.";
 }
 
-function summariseStages(stops, cache, tour, startCoords) {
-  const f = stops.map((s, i) => ({ s, i, entry: cache[cacheKey(i, s.date, tour.id)] }));
-  const fc = f.filter((x) => x.s.kind === "forecast" && x.entry && x.entry.daily);
-  const cl = f.filter((x) => x.s.kind === "climate" && x.entry && x.entry.climate);
-  // The at-a-glance dot row covers every stage; muted-gray for any stage
-  // outside the forecast window (climate fallback or still loading).
-  const glance = f.map((x) => {
-    const inForecast = x.s.kind === "forecast";
-    const code = inForecast && x.entry && x.entry.daily ? x.entry.daily.weathercode : null;
-    return {
-      i: x.i,
-      to: x.s.to,
-      date: x.s.date,
-      color: inForecast ? glanceColorFromCode(code) : "unknown",
-    };
+// One tile per stage: stage number, dominant weather icon, daily high,
+// rain-bar width relative to the tour's peak stage rain.
+function tourTileData(stops, cache, tour) {
+  if (!stops || !tour) return [];
+  return stops.map((s, i) => {
+    const entry = cache[cacheKey(i, s.date, tour.id)];
+    const daily = entry && entry.daily;
+    const climate = entry && entry.climate;
+    const code = daily ? daily.weathercode : (climate ? 3 : null);
+    const tHigh = daily ? daily.temperature_2m_max : (climate ? climate.meanHigh : null);
+    // For climate stages we approximate per-stage rain as month / 30 — only
+    // used for relative bar widths, never displayed numerically.
+    const rainMm = daily ? (daily.precipitation_sum || 0)
+      : (climate && climate.monthRainMm != null ? climate.monthRainMm / 30 : 0);
+    return { i, s, code, tHigh, rainMm, isClimate: s.kind === "climate" };
   });
-  if (!fc.length) return { fc, cl, glance };
-  // Score for "best riding day" / "toughest day": rain weighted heavily,
-  // plus headwind penalty proportional to wind speed.
-  const scored = fc.map((x) => {
+}
+
+// "Heads up" flags. Up to 3 short alerts about notable conditions. Each
+// flag combines stages into a single line ("Rain on Stages 1, 2").
+function tourHeadsUpFlags(stops, cache, tour, stageStartCoords) {
+  if (!stops || !tour) return [];
+  const fc = stops.map((s, i) => ({ s, i, entry: cache[cacheKey(i, s.date, tour.id)] }))
+    .filter((x) => x.s.kind === "forecast" && x.entry && x.entry.daily);
+  if (!fc.length) return [];
+
+  const collect = (predicate) => fc.filter(predicate).map((x) => x.i + 1);
+  const fmtStageList = (nums) => `Stage${nums.length > 1 ? "s" : ""} ${nums.join(", ")}`;
+  const out = [];
+
+  const rain = collect((x) => (x.entry.daily.precipitation_sum || 0) > 2);
+  if (rain.length) out.push({ icon: "🌧️", text: `Rain on ${fmtStageList(rain)}` });
+
+  const head = [];
+  fc.forEach((x) => {
     const d = x.entry.daily;
-    const rain = d.precipitation_sum || 0;
-    let windPenalty = 0;
-    const startC = startCoords[x.i];
-    const endC = { lat: x.s.lat, lng: x.s.lng };
-    if (startC && endC.lat != null && d.wind_direction_10m_dominant != null) {
-      const travel = bearingDeg(startC, endC);
-      const cls = classifyWind(travel, d.wind_direction_10m_dominant, d.wind_speed_10m_max || 0);
-      if (cls.kind === "head") windPenalty = (d.wind_speed_10m_max || 0) * 0.6;
-      else if (cls.kind === "cross") windPenalty = (d.wind_speed_10m_max || 0) * 0.2;
-    }
-    return { ...x, score: rain * 5 + windPenalty };
+    const startC = stageStartCoords[x.i];
+    if (!startC || x.s.lat == null || d.wind_direction_10m_dominant == null) return;
+    const travel = bearingDeg(startC, { lat: x.s.lat, lng: x.s.lng });
+    const cls = classifyWind(travel, d.wind_direction_10m_dominant, d.wind_speed_10m_max || 0);
+    if (cls.kind === "head" && (d.wind_speed_10m_max || 0) > 20) head.push(x.i + 1);
   });
-  scored.sort((a, b) => a.score - b.score);
-  return {
-    fc, cl, glance,
-    avgHigh: mean(fc.map((x) => x.entry.daily.temperature_2m_max)),
-    avgLow: mean(fc.map((x) => x.entry.daily.temperature_2m_min)),
-    totalRain: sumArr(fc.map((x) => x.entry.daily.precipitation_sum || 0)),
-    wetDays: fc.filter((x) => (x.entry.daily.precipitation_sum || 0) > 0.5).length,
-    best: scored[0],
-    tough: scored[scored.length - 1],
-  };
+  if (head.length) out.push({ icon: "💨", text: `Headwind on ${fmtStageList(head)}` });
+
+  const cold = collect((x) => (x.entry.daily.temperature_2m_min ?? 100) < 5);
+  if (cold.length) out.push({ icon: "❄️", text: `Cold start on ${fmtStageList(cold)}` });
+
+  const hot = collect((x) => (x.entry.daily.temperature_2m_max || 0) > 28);
+  if (hot.length) out.push({ icon: "☀️", text: `Hot day on ${fmtStageList(hot)}` });
+
+  const windy = collect((x) => (x.entry.daily.wind_speed_10m_max || 0) > 30);
+  if (windy.length) out.push({ icon: "⚠️", text: `Strong wind on ${fmtStageList(windy)}` });
+
+  return out.slice(0, 3);
 }
 
 // (Per-stage packing tips now generated via Claude API; the per-stage
@@ -496,11 +553,26 @@ function applyOverlapOffsets(map, markers) {
 }
 
 function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
+  const wrapRef = useRef(null);
   const elRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef({ route: null, markers: [], mids: [] });
   const [ready, setReady] = useState(false);
-  const aspectCss = useMemo(() => routeAspectCss(stops), [stops]);
+  // Measure the container so we can pick a height proportional to width.
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    setWidth(el.offsetWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : el.offsetWidth;
+      if (w) setWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const mapHeight = useMemo(() => computeMapHeight(stops, width || 600), [stops, width]);
 
   // Init the map once. Locked (no pan / no zoom) — this is a presentation
   // map, not a navigation surface.
@@ -531,14 +603,14 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
     };
   }, []);
 
-  // Container aspect-ratio can change when the selected tour swaps; tell
-  // Leaflet to re-measure so tile layers don't show grey edges.
+  // Map height can change with route shape or window width; tell Leaflet
+  // to re-measure so tile layers don't show grey edges.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     const t = setTimeout(() => map.invalidateSize(), 30);
     return () => clearTimeout(t);
-  }, [aspectCss, ready]);
+  }, [mapHeight, ready]);
 
   // Redraw route + markers on every relevant data change.
   useEffect(() => {
@@ -629,18 +701,24 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
     }
 
     // Fit bounds (including any midpoints) with generous padding so labels
-    // at the edges don't clip. Asymmetric: labels grow upward off the
-    // marker, so we leave more room on top.
+    // at the edges don't clip.
     const allPoints = latlngs.slice();
     layers.mids.forEach((m) => { const ll = m.getLatLng(); allPoints.push([ll.lat, ll.lng]); });
     if (allPoints.length === 1) {
       map.setView(allPoints[0], 10);
     } else {
       const bounds = L.latLngBounds(allPoints);
-      map.fitBounds(bounds, {
-        paddingTopLeft: [70, 80],
-        paddingBottomRight: [70, 40],
-      });
+      // Very vertical routes pinch into a thin column in the centre of a
+      // wide-ish map; pad east-west so the route uses the available width.
+      const { routeAspect } = routeMetrics(stops);
+      if (routeAspect < 0.5) {
+        const east = bounds.getEast(), west = bounds.getWest();
+        const cLat = bounds.getCenter().lat;
+        const expand = Math.max((east - west) * 0.08, 0.04);
+        bounds.extend([cLat, east + expand]);
+        bounds.extend([cLat, west - expand]);
+      }
+      map.fitBounds(bounds, { padding: [80, 80] });
     }
     // After Leaflet has positioned the markers, compute screen-space overlaps
     // and bump colliding markers upward. requestAnimationFrame waits until
@@ -660,8 +738,9 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
 
   return (
     <div
+      ref={wrapRef}
       className="wx3-map"
-      style={{ aspectRatio: aspectCss, maxHeight: 600, minHeight: 280 }}
+      style={{ height: mapHeight }}
     >
       <div ref={elRef} className="wx3-map-canvas" />
     </div>
@@ -915,101 +994,76 @@ function StageDetailClimate({ stop, idx, entry }) {
 }
 
 // ---------- Left column cards ----------
-function TourOutlookCard({ summary, activeIdx, onPickStage }) {
-  const { iconForCode, IconSun, IconRain, IconCloud } = window;
-  if (!summary || (!summary.fc.length && !(summary.glance && summary.glance.length))) {
-    const isClimateOnly = summary && summary.cl && summary.cl.length;
+function TourOutlookCard({ stops, cache, tour, stageStartCoords, activeIdx, onPickStage }) {
+  const { iconForCode } = window;
+  const line = useMemo(
+    () => tourCharacterLine(stops, cache, tour),
+    [stops, cache, tour]
+  );
+  const tiles = useMemo(
+    () => tourTileData(stops, cache, tour),
+    [stops, cache, tour]
+  );
+  const flags = useMemo(
+    () => tourHeadsUpFlags(stops, cache, tour, stageStartCoords),
+    [stops, cache, tour, stageStartCoords]
+  );
+  const peakRain = useMemo(
+    () => Math.max(0.5, ...tiles.map((t) => t.rainMm || 0)),
+    [tiles]
+  );
+
+  if (!tiles.length) {
     return (
       <div className="card">
         <div className="section-title"><h2 style={{ fontSize: 16 }}>Tour outlook</h2></div>
-        <div className="wx3-outlook-note">
-          {isClimateOnly
-            ? "Event is beyond the 16-day window — see Packing tips for typical conditions."
-            : "Loading forecast outlook…"}
-        </div>
+        <div className="wx3-outlook-note">Loading forecast outlook…</div>
       </div>
     );
   }
-  const hasForecast = summary.fc.length > 0;
-  // For wet-day count we use the count of forecast stages with measurable
-  // rain — falling back to "—" when nothing is forecast yet.
-  const wetText = hasForecast ? `${summary.wetDays} / ${summary.fc.length} WET` : "— WET";
-  const bestCode = summary.best && summary.best.entry && summary.best.entry.daily
-    ? summary.best.entry.daily.weathercode : null;
-  const toughCode = summary.tough && summary.tough.entry && summary.tough.entry.daily
-    ? summary.tough.entry.daily.weathercode : null;
   return (
     <div className="card">
       <div className="section-title"><h2 style={{ fontSize: 16 }}>Tour outlook</h2></div>
-
       <div className="wx3-outlook2">
-        <div className="wx3-stat-tiles">
-          <div className="tile">
-            <span className="ic"><IconCloud size={18} /></span>
-            <span className="val">{hasForecast ? `${Math.round(summary.avgHigh)}°` : "—"}</span>
-            <span className="lbl">Avg high</span>
-          </div>
-          <div className="tile">
-            <span className="ic"><IconRain size={18} /></span>
-            <span className="val">{hasForecast ? `${summary.totalRain.toFixed(1)} mm` : "—"}</span>
-            <span className="lbl">Total rain</span>
-          </div>
-          <div className="tile">
-            <span className="ic"><IconSun size={18} /></span>
-            <span className="val">{wetText}</span>
-            <span className="lbl">Days</span>
-          </div>
+        {line && <p className="wx3-outlook-char">{line}</p>}
+        <div className="wx3-tour-strip">
+          {tiles.map((t) => {
+            const Icon = t.code != null ? iconForCode(t.code) : null;
+            const cool = t.code != null && t.code >= 50;
+            const rainPct = Math.min(100, (t.rainMm / peakRain) * 100);
+            const isActive = t.i === activeIdx;
+            return (
+              <button
+                type="button"
+                key={t.i}
+                className={"tour-tile"
+                  + (isActive ? " active" : "")
+                  + (t.isClimate ? " climate" : "")}
+                onClick={() => onPickStage && onPickStage(t.i)}
+                title={`Stage ${t.i + 1} · ${shortCity(t.s.to)}`}
+                aria-label={`Stage ${t.i + 1}`}
+              >
+                <span className="n">{t.i + 1}</span>
+                <span className={"ic" + (cool ? " cool" : "")}>
+                  {Icon ? <Icon size={22} /> : <span className="dash">—</span>}
+                </span>
+                <span className="t">{t.tHigh != null ? `${Math.round(t.tHigh)}°` : "—"}</span>
+                <span className="bar" aria-hidden>
+                  <span className="fill" style={{ width: `${rainPct}%` }} />
+                </span>
+              </button>
+            );
+          })}
         </div>
-
-        {hasForecast && summary.best && summary.tough && summary.best.i !== summary.tough.i && (
-          <div className="wx3-bestworst">
-            <button
-              type="button"
-              className="wx3-bw-card"
-              onClick={() => onPickStage && onPickStage(summary.best.i)}
-            >
-              <span className="hdr">Best riding day</span>
-              <span className="stg">Stage {summary.best.i + 1}</span>
-              <span className="city">{shortCity(summary.best.s.to)}</span>
-              <span className="cond">
-                {Math.round(summary.best.entry.daily.temperature_2m_max)}° · {conditionShortForCode(bestCode)}
-              </span>
-            </button>
-            <button
-              type="button"
-              className="wx3-bw-card tough"
-              onClick={() => onPickStage && onPickStage(summary.tough.i)}
-            >
-              <span className="hdr">Toughest day</span>
-              <span className="stg">Stage {summary.tough.i + 1}</span>
-              <span className="city">{shortCity(summary.tough.s.to)}</span>
-              <span className="cond">
-                {Math.round(summary.tough.entry.daily.temperature_2m_max)}° · {conditionShortForCode(toughCode)}
-              </span>
-            </button>
-          </div>
-        )}
-
-        {summary.glance && summary.glance.length > 0 && (
-          <div className="wx3-glance">
-            <div className="lbl">Tour at a glance</div>
-            <div className="dots">
-              {summary.glance.map((g) => (
-                <button
-                  type="button"
-                  key={g.i}
-                  className={"dot " + g.color + (g.i === activeIdx ? " active" : "")}
-                  title={`Stage ${g.i + 1} · ${shortCity(g.to)}`}
-                  onClick={() => onPickStage && onPickStage(g.i)}
-                  aria-label={`Stage ${g.i + 1}`}
-                />
-              ))}
-            </div>
-            <div className="nums">
-              {summary.glance.map((g) => (
-                <span key={g.i}>{g.i + 1}</span>
-              ))}
-            </div>
+        {flags.length > 0 && (
+          <div className="wx3-headsup">
+            <div className="hdr">Heads up</div>
+            {flags.map((f, k) => (
+              <div className="flag" key={k}>
+                <span className="emoji" aria-hidden>{f.icon}</span>
+                <span className="t">{f.text}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -1273,6 +1327,34 @@ function EmptyState({ reason, tourName }) {
   );
 }
 
+// Informational banner shown above the map when the event is beyond the
+// 16-day forecast horizon. Tells the user that what they're looking at is
+// climate-based and when detailed forecasts will become available.
+function ClimateBanner({ daysOut, eventDate }) {
+  if (daysOut == null || daysOut <= FORECAST_HORIZON_DAYS) return null;
+  const becomes = new Date(eventDate);
+  becomes.setDate(becomes.getDate() - FORECAST_HORIZON_DAYS);
+  return (
+    <div className="wx3-climate-banner" role="status">
+      <span className="ico" aria-hidden>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 8h.01M11 12h1v4h1" />
+        </svg>
+      </span>
+      <div className="txt">
+        <div className="main">Showing typical weather for this time of year.</div>
+        <div className="sub">
+          Detailed hour-by-hour forecasts become available {FORECAST_HORIZON_DAYS} days before
+          your event. Come back on {fmtFriendlyDate(becomes)} for precise predictions.
+        </div>
+      </div>
+      <div className="cap">{daysOut} days to go</div>
+    </div>
+  );
+}
+
 // ---------- Main ----------
 function WeatherTab() {
   const indexOf = () => (window.RP_TourStorage ? window.RP_TourStorage.readToursIndex() : readTours());
@@ -1420,12 +1502,6 @@ function WeatherTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tour && tour.id, stopBuckets.map((s) => `${s.lat},${s.lng},${s.date},${s.kind}`).join("|")]);
 
-  // Tour-level aggregates for the outlook card. Cheap; runs once per render.
-  const tourSummary = useMemo(
-    () => tour ? summariseStages(stopBuckets, cache, tour, stageStartCoords) : null,
-    [stopBuckets, cache, tour, stageStartCoords]
-  );
-
   // Training context for AI packing tips — read once from the Training tab's
   // saved inputs. Fitness level + weekly hours feed into the prompt.
   const training = useMemo(() => {
@@ -1477,7 +1553,14 @@ function WeatherTab() {
             </div>
           </div>
 
-          <TourOutlookCard summary={tourSummary} activeIdx={safeIdx} onPickStage={setActiveStop} />
+          <TourOutlookCard
+            stops={stopBuckets}
+            cache={cache}
+            tour={tour}
+            stageStartCoords={stageStartCoords}
+            activeIdx={safeIdx}
+            onPickStage={setActiveStop}
+          />
           <PackingTipsCard
             stop={active}
             stopIdx={safeIdx}
@@ -1489,6 +1572,12 @@ function WeatherTab() {
         </div>
 
         <div className="wx3-right">
+          {(() => {
+            const daysOut = daysBetween(new Date(), startDate);
+            return daysOut > FORECAST_HORIZON_DAYS
+              ? <ClimateBanner daysOut={daysOut} eventDate={startDate} />
+              : null;
+          })()}
           <RouteMap stops={stopBuckets} cache={cache} activeIdx={safeIdx} onPick={setActiveStop} tour={tour} />
           <StagesStrip stops={stopBuckets} cache={cache} activeIdx={safeIdx} onPick={setActiveStop} tour={tour} />
 
