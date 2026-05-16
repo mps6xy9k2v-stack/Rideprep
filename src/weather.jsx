@@ -65,6 +65,64 @@ function sumArr(arr) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+// Short city: take the part before the first comma. "Münster, NW, Deutschland" → "Münster".
+function shortCity(s) {
+  if (!s) return s;
+  const i = String(s).indexOf(",");
+  return (i >= 0 ? String(s).slice(0, i) : String(s)).trim();
+}
+
+// Compute an adaptive aspect ratio for the route map based on the route's
+// bounding box. Wide east-west routes stay wide; tall north-south routes
+// get a taller container so they don't look cramped.
+function routeAspectCss(stops) {
+  const pts = (stops || []).filter((s) => s && s.lat != null && s.lng != null);
+  if (pts.length < 2) return "2.5 / 1";
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  pts.forEach((p) => {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  });
+  const latSpan = Math.max(maxLat - minLat, 0.001);
+  const meanLatRad = ((maxLat + minLat) / 2) * Math.PI / 180;
+  const lngSpan = Math.max((maxLng - minLng) * Math.cos(meanLatRad), 0.001);
+  const a = lngSpan / latSpan;
+  if (a > 2.0) return "2.5 / 1";
+  if (a >= 1.0) return "2 / 1";
+  if (a >= 0.5) return "4 / 3";
+  return "4 / 5";
+}
+
+// Short condition summary used in best/toughest cards in the Tour outlook.
+function conditionShortForCode(code) {
+  const { conditionForCode } = window;
+  if (conditionForCode) return conditionForCode(code);
+  return "";
+}
+
+// Pick an icon code for the headline that matches the headline's tone.
+// When the headline says "dry" but the daily.weathercode is a rain code
+// (because some hourly forecast shows light precip), fall back to the
+// dominant non-rain hourly code (typically overcast or partly cloudy)
+// so the icon doesn't contradict the headline.
+function headlineIconCode(daily, hourly) {
+  const code = daily.weathercode;
+  const totalMm = daily.precipitation_sum || 0;
+  if (totalMm >= 0.5) return code;
+  const isRain = (c) => (c >= 51 && c <= 67) || (c >= 80 && c <= 86) || (c >= 95);
+  if (!isRain(code)) return code;
+  if (!hourly || !hourly.length) return 3;
+  const counts = {};
+  hourly.forEach((h) => {
+    if (h.code != null && !isRain(h.code)) {
+      counts[h.code] = (counts[h.code] || 0) + 1;
+    }
+  });
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  return sorted.length ? Number(sorted[0][0]) : 3;
+}
 
 // Great-circle distance in km between two (lat, lng) points.
 function haversineKm(a, b) {
@@ -213,16 +271,19 @@ function classifyWind(travelBearing, windFromDeg, speedKmh) {
   return { kind, tier, rel, speed: speedKmh };
 }
 
+// Saturated wind colors — fully green for tailwind, fully yellow/orange/red
+// for head and crosswind, so labels read at a glance and don't look washed out.
 function windColor(kind, tier) {
   if (tier === 0) return "var(--fg-faint)";
   if (kind === "tail") {
-    if (tier === 1) return "color-mix(in oklch, var(--ok) 55%, var(--bg))";
-    if (tier === 2) return "var(--ok)";
-    return "color-mix(in oklch, var(--ok) 70%, #1c5b35)";
+    if (tier === 1) return "#65a86b";
+    if (tier === 2) return "#3e8c4a";
+    return "#1f5b32";
   }
-  if (tier === 1) return "color-mix(in oklch, var(--warm) 60%, var(--bg))";
-  if (tier === 2) return "color-mix(in oklch, var(--warm) 65%, var(--danger))";
-  return "var(--danger)";
+  // head + cross share the warm/danger ramp
+  if (tier === 1) return "#e0a23c";
+  if (tier === 2) return "#d77026";
+  return "#c8392a";
 }
 
 function windLabel(kind, tier) {
@@ -233,35 +294,77 @@ function windLabel(kind, tier) {
 }
 
 // ---------- Headline generation ----------
+// Drives the day's one-line summary AND its icon. Rule order is fixed so
+// the language always matches the rain data — never "Drizzle and dry."
 function makeHeadline(daily, hourly) {
-  const code = daily.weathercode;
-  const { conditionForCode } = window;
-  const wet = hourly.filter((h) => (h.precip ?? 0) >= 0.3 || (h.prob ?? 0) >= 60);
   const totalMm = daily.precipitation_sum || 0;
-  if (!wet.length) {
-    if (code === 0) return "Clear skies, dry all day";
-    if (code <= 2) return "Mostly sunny, no rain expected";
-    if (code === 3) return "Overcast but dry";
-    if (code === 45 || code === 48) return "Foggy and damp, no rain in the forecast";
-    return `${conditionForCode(code)} and dry`;
+  const probMax = daily.precipitation_probability_max || 0;
+  const code = daily.weathercode;
+
+  let body;
+  if (totalMm === 0) {
+    if (probMax < 20) {
+      const cloudy = code >= 3; // overcast or worse (but no measurable rain)
+      body = cloudy ? "Overcast but dry" : "Sunny and dry";
+    } else if (probMax < 50) {
+      body = "Mostly dry, slight chance of showers";
+    } else {
+      body = "Mostly dry, chance of showers";
+    }
+  } else if (totalMm < 0.5) {
+    body = "Trace of rain possible";
+  } else if (totalMm < 2) {
+    const wetH = hourly.filter((h) => (h.precip || 0) >= 0.1).length;
+    body = `Light rain expected, ${wetH}h of showers`;
+  } else if (totalMm < 8) {
+    body = "Wet day, plan for rain gear";
+  } else {
+    body = "Heavy rain expected throughout the day";
   }
-  const hours = wet.map((h) => h.hour).sort((a, b) => a - b);
-  const first = hours[0], last = hours[hours.length - 1];
-  const span = wet.length;
-  const intensity = totalMm > 10 ? "heavy rain" : totalMm > 3 ? "steady rain" : "light rain";
-  if (first <= 6 && last >= 18) return `${cap(intensity)} much of the day`;
-  if (first <= 8 && last <= 12) return `${cap(intensity)} in the morning, drier later`;
-  if (first >= 14) return `Dry until afternoon, then ${span}h of ${intensity}`;
-  if (first >= 11 && last <= 17) return `${cap(intensity)} through the afternoon`;
-  return `${span}h of ${intensity} between ${pad2(first)}:00 and ${pad2(last + 1)}:00`;
+
+  // Concentration qualifier: only meaningful when there's real rain AND
+  // a clear 3-hour spike. Skip for trace amounts and broad-soak days.
+  if (totalMm >= 0.5 && totalMm < 8 && hourly.length >= 3) {
+    let bestSum = 0, bestStart = -1;
+    for (let i = 0; i + 2 < hourly.length; i++) {
+      const w = (hourly[i].precip || 0) + (hourly[i + 1].precip || 0) + (hourly[i + 2].precip || 0);
+      if (w > bestSum) { bestSum = w; bestStart = i; }
+    }
+    if (bestStart >= 0 && bestSum > 0.7 * totalMm) {
+      const h0 = hourly[bestStart].hour;
+      body += `, concentrated around ${pad2(h0)}-${pad2((h0 + 3) % 24)}h`;
+    }
+  }
+  return body;
 }
 
 // ---------- Tour-level aggregates & packing tips ----------
+// Map a weathercode to one of four dot colors used in the tour-at-a-glance
+// row. Anything missing (no forecast entry, or climate-only) returns "unknown".
+function glanceColorFromCode(code) {
+  if (code == null) return "unknown";
+  if (code === 0 || code <= 2) return "sunny";
+  if (code <= 48) return "cloudy";
+  return "rain";
+}
+
 function summariseStages(stops, cache, tour, startCoords) {
   const f = stops.map((s, i) => ({ s, i, entry: cache[cacheKey(i, s.date, tour.id)] }));
   const fc = f.filter((x) => x.s.kind === "forecast" && x.entry && x.entry.daily);
   const cl = f.filter((x) => x.s.kind === "climate" && x.entry && x.entry.climate);
-  if (!fc.length) return { fc, cl };
+  // The at-a-glance dot row covers every stage; muted-gray for any stage
+  // outside the forecast window (climate fallback or still loading).
+  const glance = f.map((x) => {
+    const inForecast = x.s.kind === "forecast";
+    const code = inForecast && x.entry && x.entry.daily ? x.entry.daily.weathercode : null;
+    return {
+      i: x.i,
+      to: x.s.to,
+      date: x.s.date,
+      color: inForecast ? glanceColorFromCode(code) : "unknown",
+    };
+  });
+  if (!fc.length) return { fc, cl, glance };
   // Score for "best riding day" / "toughest day": rain weighted heavily,
   // plus headwind penalty proportional to wind speed.
   const scored = fc.map((x) => {
@@ -280,7 +383,7 @@ function summariseStages(stops, cache, tour, startCoords) {
   });
   scored.sort((a, b) => a.score - b.score);
   return {
-    fc, cl,
+    fc, cl, glance,
     avgHigh: mean(fc.map((x) => x.entry.daily.temperature_2m_max)),
     avgLow: mean(fc.map((x) => x.entry.daily.temperature_2m_min)),
     totalRain: sumArr(fc.map((x) => x.entry.daily.precipitation_sum || 0)),
@@ -303,33 +406,101 @@ function WindArrow({ deg = 0, color = "var(--fg)", size = 28 }) {
   );
 }
 
-function RainSparkline({ daily, hourly }) {
+// Three day-period chips (AM / MIDDAY / EVE) replacing the rain sparkline
+// in stage cards. Each chip carries the dominant weather icon and average
+// temperature for its window; a rain-drop dot signals that the period's
+// max probability of rain exceeded 50%. Below the row, the daily total in
+// mm — or "Dry" when no measurable rain falls in riding hours.
+function StagePeriodChips({ daily, hourly }) {
+  const { iconForCode } = window;
   const sunrise = daily.sunrise ? new Date(daily.sunrise).getHours() : 6;
   const sunset = daily.sunset ? new Date(daily.sunset).getHours() : 20;
-  const cells = hourly.filter((h) => h.hour >= sunrise && h.hour <= sunset + 1);
-  const totalMm = cells.reduce((s, c) => s + (c.precip || 0), 0);
-  if (totalMm < 0.2 || cells.length === 0) {
-    return <div className="wx3-spark wx3-spark-empty">Dry</div>;
-  }
-  const maxMm = Math.max(0.3, ...cells.map((c) => c.precip || 0));
+  const periods = [
+    { key: "am",     label: "AM",     lo: sunrise, hi: 11 },
+    { key: "midday", label: "MIDDAY", lo: 12,      hi: 16 },
+    { key: "eve",    label: "EVE",    lo: 17,      hi: sunset },
+  ];
+  const totalMm = hourly
+    .filter((h) => h.hour >= sunrise && h.hour <= sunset + 1)
+    .reduce((s, h) => s + (h.precip || 0), 0);
+
   return (
-    <div className="wx3-spark" aria-label={`Rain sparkline, ${totalMm.toFixed(1)} mm total`}>
-      {cells.map((c, i) => {
-        const mm = c.precip || 0;
-        const h = Math.max(8, (mm / maxMm) * 100);
-        const op = Math.max(0.18, Math.min(1, (c.prob || 0) / 100));
-        return <span key={i} className="wx3-spark-col" style={{ height: `${h}%`, opacity: op }} />;
-      })}
+    <div className="wx3-period-row">
+      <div className="wx3-period-chips">
+        {periods.map((p) => {
+          const cells = hourly.filter((h) => h.hour >= p.lo && h.hour <= p.hi);
+          if (!cells.length) {
+            return (
+              <div key={p.key} className="chip empty">
+                <span className="period">{p.label}</span>
+                <span className="dash">—</span>
+              </div>
+            );
+          }
+          const tAvg = mean(cells.map((c) => c.t));
+          const counts = {};
+          cells.forEach((c) => { if (c.code != null) counts[c.code] = (counts[c.code] || 0) + 1; });
+          const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+          const codeMode = sorted.length ? Number(sorted[0][0]) : 3;
+          const maxProb = Math.max(0, ...cells.map((c) => c.prob || 0));
+          const Icon = iconForCode(codeMode);
+          const cool = codeMode >= 50;
+          const rainy = maxProb > 50;
+          return (
+            <div key={p.key} className="chip">
+              <span className="period">{p.label}</span>
+              <span className={"chip-ic" + (cool ? " cool" : "")}>
+                <Icon size={16} />
+                {rainy && <span className="drop" aria-hidden>●</span>}
+              </span>
+              <span className="temp">{tAvg != null ? `${Math.round(tAvg)}°` : "—"}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="wx3-period-total">
+        {totalMm < 0.2 ? <span className="dry">Dry</span> : <span>{totalMm.toFixed(1)} mm total</span>}
+      </div>
     </div>
   );
 }
 
 // ---------- Map (Leaflet) ----------
+// After fitBounds, project every marker to screen space and bump any that
+// would visually collide with an earlier one upward. The CSS var --mk-offset
+// lives on the inner .wx3-mk element and is folded into the translate.
+function applyOverlapOffsets(map, markers) {
+  if (!map || !markers.length) return;
+  const positions = markers.map((m) => {
+    try { return map.latLngToContainerPoint(m.getLatLng()); }
+    catch { return null; }
+  });
+  const offsets = new Array(markers.length).fill(0);
+  for (let i = 0; i < markers.length; i++) {
+    if (!positions[i]) continue;
+    for (let j = 0; j < i; j++) {
+      if (!positions[j]) continue;
+      const dx = positions[i].x - positions[j].x;
+      const dy = positions[i].y - positions[j].y;
+      if (Math.sqrt(dx * dx + dy * dy) < 80) {
+        offsets[i] = Math.max(offsets[i], offsets[j] + 24);
+      }
+    }
+  }
+  markers.forEach((m, i) => {
+    if (!m._icon) return;
+    const inner = m._icon.querySelector(".wx3-mk");
+    if (!inner) return;
+    inner.style.setProperty("--mk-offset", `${-offsets[i]}px`);
+  });
+}
+
 function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
   const elRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef({ route: null, markers: [], mids: [] });
   const [ready, setReady] = useState(false);
+  const aspectCss = useMemo(() => routeAspectCss(stops), [stops]);
 
   // Init the map once. Locked (no pan / no zoom) — this is a presentation
   // map, not a navigation surface.
@@ -359,6 +530,15 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       mapRef.current = null;
     };
   }, []);
+
+  // Container aspect-ratio can change when the selected tour swaps; tell
+  // Leaflet to re-measure so tile layers don't show grey edges.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const t = setTimeout(() => map.invalidateSize(), 30);
+    return () => clearTimeout(t);
+  }, [aspectCss, ready]);
 
   // Redraw route + markers on every relevant data change.
   useEffect(() => {
@@ -405,9 +585,10 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
         : "";
       const iconHtml = code != null ? iconSvgString(code, 20) : "";
       const hasBody = code != null || (!isClimate && tempLabel);
+      const displayName = shortCity(s.to);
       const html = `
         <div class="wx3-mk ${isActive ? "active" : ""} ${isClimate ? "climate" : ""}">
-          <div class="wx3-mk-name">${escapeHtml(s.to)}</div>
+          <div class="wx3-mk-name" title="${escapeHtml(s.to || "")}">${escapeHtml(displayName)}</div>
           ${hasBody ? `
             <div class="wx3-mk-body">
               ${iconHtml ? `<span class="wx3-mk-ic ${cool ? "cool" : ""}">${iconHtml}</span>` : ""}
@@ -422,7 +603,10 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
         iconSize: null,
         iconAnchor: [0, 0],
       });
-      const m = L.marker([s.lat, s.lng], { icon, riseOnHover: true, zIndexOffset: isActive ? 1000 : 0 }).addTo(map);
+      // z stacking: later stages above earlier ones (so labels read forward),
+      // active always on top.
+      const zOff = isActive ? 1000 : stopIdx;
+      const m = L.marker([s.lat, s.lng], { icon, riseOnHover: true, zIndexOffset: zOff }).addTo(map);
       m.on("click", () => onPick(stopIdx));
       layers.markers.push(m);
     });
@@ -444,19 +628,41 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       layers.mids.push(m);
     }
 
-    // Fit bounds (including any midpoints) with ~10% padding.
+    // Fit bounds (including any midpoints) with generous padding so labels
+    // at the edges don't clip. Asymmetric: labels grow upward off the
+    // marker, so we leave more room on top.
     const allPoints = latlngs.slice();
     layers.mids.forEach((m) => { const ll = m.getLatLng(); allPoints.push([ll.lat, ll.lng]); });
     if (allPoints.length === 1) {
       map.setView(allPoints[0], 10);
     } else {
       const bounds = L.latLngBounds(allPoints);
-      map.fitBounds(bounds, { padding: [30, 30] });
+      map.fitBounds(bounds, {
+        paddingTopLeft: [70, 80],
+        paddingBottomRight: [70, 40],
+      });
     }
+    // After Leaflet has positioned the markers, compute screen-space overlaps
+    // and bump colliding markers upward. requestAnimationFrame waits until
+    // the DOM has the icons placed.
+    const raf = requestAnimationFrame(() => {
+      applyOverlapOffsets(map, layers.markers);
+    });
+    // Re-apply on map resize so the offsets stay correct after orientation
+    // changes (responsive aspect ratio swaps).
+    const onResize = () => applyOverlapOffsets(map, layers.markers);
+    map.on("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      map.off("resize", onResize);
+    };
   }, [stops, cache, activeIdx, tour, ready]);
 
   return (
-    <div className="wx3-map">
+    <div
+      className="wx3-map"
+      style={{ aspectRatio: aspectCss, maxHeight: 600, minHeight: 280 }}
+    >
       <div ref={elRef} className="wx3-map-canvas" />
     </div>
   );
@@ -479,12 +685,11 @@ function StagesStrip({ stops, cache, activeIdx, onPick, tour }) {
         const cls = "wx3-stage"
           + (i === activeIdx ? " active" : "")
           + (s.kind === "climate" ? " climate" : "");
-        const totalMm = daily ? (daily.precipitation_sum || 0) : 0;
         return (
           <div key={i} className={cls} onClick={() => onPick(i)}>
             <span className="num">Stage {i + 1}</span>
             <span className="day">{fmtLongDate(s.date)}</span>
-            <span className="place" title={s.to}>{s.to}</span>
+            <span className="place" title={s.to}>{shortCity(s.to)}</span>
             <div className="meta">
               <span className={"ic" + (cool ? " cool" : "")}><Icon size={18} /></span>
               <span className="temp">
@@ -494,10 +699,7 @@ function StagesStrip({ stops, cache, activeIdx, onPick, tour }) {
               </span>
             </div>
             {daily ? (
-              <div className="wx3-stage-spark">
-                <RainSparkline daily={daily} hourly={entry.hourly || []} />
-                <span className="mm">{totalMm < 0.2 ? "—" : `${totalMm.toFixed(1)} mm`}</span>
-              </div>
+              <StagePeriodChips daily={daily} hourly={entry.hourly || []} />
             ) : (
               <span className="summary">
                 {climate ? `${Math.round(climate.monthRainMm)} mm typical` : "Loading…"}
@@ -630,7 +832,7 @@ function StageDetailForecast({ stop, idx, entry, startCoord, endCoord }) {
     return (
       <div className="wx3-detail">
         <div className="header">
-          <span className="label">Stage {idx + 1} · {fmtFullDate(stop.date)} · {(stop.from || "").toUpperCase()} → {(stop.to || "").toUpperCase()}</span>
+          <span className="label">Stage {idx + 1} · {fmtFullDate(stop.date)} · {shortCity(stop.from || "").toUpperCase()} → {shortCity(stop.to || "").toUpperCase()}</span>
           <h2 style={{ opacity: 0.5 }}>Loading forecast…</h2>
         </div>
       </div>
@@ -638,13 +840,13 @@ function StageDetailForecast({ stop, idx, entry, startCoord, endCoord }) {
   }
   const { daily, hourly = [] } = entry;
   const headline = makeHeadline(daily, hourly);
-  const code = daily.weathercode;
-  const Icon = iconForCode(code);
-  const cool = code >= 50;
+  const iconCode = headlineIconCode(daily, hourly);
+  const Icon = iconForCode(iconCode);
+  const cool = iconCode >= 50;
   return (
     <div className="wx3-detail">
       <div className="header">
-        <span className="label">Stage {idx + 1} · {fmtFullDate(stop.date)} · {(stop.from || "").toUpperCase()} → {(stop.to || "").toUpperCase()}</span>
+        <span className="label">Stage {idx + 1} · {fmtFullDate(stop.date)} · {shortCity(stop.from || "").toUpperCase()} → {shortCity(stop.to || "").toUpperCase()}</span>
         <h2>
           <span className={"wx3-hl-ic" + (cool ? " cool" : "")}><Icon size={22} /></span>
           {headline}.
@@ -681,7 +883,7 @@ function StageDetailClimate({ stop, idx, entry }) {
   return (
     <div className="wx3-climate">
       <div className="head">
-        <span className="label">Stage {idx + 1} · {fmtFullDate(stop.date)} · {(stop.from || "").toUpperCase()} → {(stop.to || "").toUpperCase()}</span>
+        <span className="label">Stage {idx + 1} · {fmtFullDate(stop.date)} · {shortCity(stop.from || "").toUpperCase()} → {shortCity(stop.to || "").toUpperCase()}</span>
         <h2>Typical {month} weather for this area</h2>
         <div className="src">
           {climate
@@ -713,8 +915,9 @@ function StageDetailClimate({ stop, idx, entry }) {
 }
 
 // ---------- Left column cards ----------
-function TourOutlookCard({ summary }) {
-  if (!summary || !summary.fc || !summary.fc.length) {
+function TourOutlookCard({ summary, activeIdx, onPickStage }) {
+  const { iconForCode, IconSun, IconRain, IconCloud } = window;
+  if (!summary || (!summary.fc.length && !(summary.glance && summary.glance.length))) {
     const isClimateOnly = summary && summary.cl && summary.cl.length;
     return (
       <div className="card">
@@ -727,30 +930,88 @@ function TourOutlookCard({ summary }) {
       </div>
     );
   }
+  const hasForecast = summary.fc.length > 0;
+  // For wet-day count we use the count of forecast stages with measurable
+  // rain — falling back to "—" when nothing is forecast yet.
+  const wetText = hasForecast ? `${summary.wetDays} / ${summary.fc.length} WET` : "— WET";
+  const bestCode = summary.best && summary.best.entry && summary.best.entry.daily
+    ? summary.best.entry.daily.weathercode : null;
+  const toughCode = summary.tough && summary.tough.entry && summary.tough.entry.daily
+    ? summary.tough.entry.daily.weathercode : null;
   return (
     <div className="card">
       <div className="section-title"><h2 style={{ fontSize: 16 }}>Tour outlook</h2></div>
-      <div className="wx3-outlook">
-        <div className="row">
-          <span className="l">Avg high / low</span>
-          <span className="v">{Math.round(summary.avgHigh)}° / {Math.round(summary.avgLow)}°</span>
+
+      <div className="wx3-outlook2">
+        <div className="wx3-stat-tiles">
+          <div className="tile">
+            <span className="ic"><IconCloud size={18} /></span>
+            <span className="val">{hasForecast ? `${Math.round(summary.avgHigh)}°` : "—"}</span>
+            <span className="lbl">Avg high</span>
+          </div>
+          <div className="tile">
+            <span className="ic"><IconRain size={18} /></span>
+            <span className="val">{hasForecast ? `${summary.totalRain.toFixed(1)} mm` : "—"}</span>
+            <span className="lbl">Total rain</span>
+          </div>
+          <div className="tile">
+            <span className="ic"><IconSun size={18} /></span>
+            <span className="val">{wetText}</span>
+            <span className="lbl">Days</span>
+          </div>
         </div>
-        <div className="row">
-          <span className="l">Total rain</span>
-          <span className="v">{summary.totalRain.toFixed(1)} mm</span>
-        </div>
-        <div className="row">
-          <span className="l">Wet days</span>
-          <span className="v">{summary.wetDays} of {summary.fc.length}</span>
-        </div>
-        <div className="row split">
-          <span className="l">Best riding day</span>
-          <span className="v">Stage {summary.best.i + 1}<em>{summary.best.s.to}</em></span>
-        </div>
-        <div className="row split">
-          <span className="l">Toughest day</span>
-          <span className="v">Stage {summary.tough.i + 1}<em>{summary.tough.s.to}</em></span>
-        </div>
+
+        {hasForecast && summary.best && summary.tough && summary.best.i !== summary.tough.i && (
+          <div className="wx3-bestworst">
+            <button
+              type="button"
+              className="wx3-bw-card"
+              onClick={() => onPickStage && onPickStage(summary.best.i)}
+            >
+              <span className="hdr">Best riding day</span>
+              <span className="stg">Stage {summary.best.i + 1}</span>
+              <span className="city">{shortCity(summary.best.s.to)}</span>
+              <span className="cond">
+                {Math.round(summary.best.entry.daily.temperature_2m_max)}° · {conditionShortForCode(bestCode)}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="wx3-bw-card tough"
+              onClick={() => onPickStage && onPickStage(summary.tough.i)}
+            >
+              <span className="hdr">Toughest day</span>
+              <span className="stg">Stage {summary.tough.i + 1}</span>
+              <span className="city">{shortCity(summary.tough.s.to)}</span>
+              <span className="cond">
+                {Math.round(summary.tough.entry.daily.temperature_2m_max)}° · {conditionShortForCode(toughCode)}
+              </span>
+            </button>
+          </div>
+        )}
+
+        {summary.glance && summary.glance.length > 0 && (
+          <div className="wx3-glance">
+            <div className="lbl">Tour at a glance</div>
+            <div className="dots">
+              {summary.glance.map((g) => (
+                <button
+                  type="button"
+                  key={g.i}
+                  className={"dot " + g.color + (g.i === activeIdx ? " active" : "")}
+                  title={`Stage ${g.i + 1} · ${shortCity(g.to)}`}
+                  onClick={() => onPickStage && onPickStage(g.i)}
+                  aria-label={`Stage ${g.i + 1}`}
+                />
+              ))}
+            </div>
+            <div className="nums">
+              {summary.glance.map((g) => (
+                <span key={g.i}>{g.i + 1}</span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1216,7 +1477,7 @@ function WeatherTab() {
             </div>
           </div>
 
-          <TourOutlookCard summary={tourSummary} />
+          <TourOutlookCard summary={tourSummary} activeIdx={safeIdx} onPickStage={setActiveStop} />
           <PackingTipsCard
             stop={active}
             stopIdx={safeIdx}

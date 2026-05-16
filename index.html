@@ -2019,7 +2019,9 @@ input[type="range"]::-moz-range-thumb {
 .wx3-left { display: grid; gap: 14px; align-content: start; }
 .wx3-right { display: grid; gap: 16px; min-width: 0; }
 
-/* ---------- Route map (Leaflet, locked 2.5:1) ---------- */
+/* ---------- Route map (Leaflet, adaptive aspect) ----------
+   Default aspect is 2.5:1; React component overrides this inline based
+   on the route's bounding box (taller for north-south, wider for east-west). */
 .wx3-map {
   position: relative;
   width: 100%;
@@ -2041,20 +2043,33 @@ input[type="range"]::-moz-range-thumb {
    inner .wx3-mk transform so the popup-style card sits centred on the
    lat/lng. */
 .wx3-pin-wrap { background: none !important; border: none !important; }
+/* --mk-offset is set by JS after fitBounds to bump overlapping markers up. */
 .wx3-mk {
+  --mk-offset: 0px;
   position: relative;
-  transform: translate(-50%, -100%);
+  transform: translate(-50%, calc(-100% + var(--mk-offset)));
   display: grid; gap: 4px; justify-items: center;
   cursor: pointer;
+  /* 10px padding extends the hit area beyond the visible chip. The
+     transparent padding stays clickable; pointer-events on the wrap is
+     none so empty space doesn't intercept tile drags. */
+  padding: 10px;
+  margin: -10px;
   pointer-events: auto;
+  transition: transform .15s ease;
   filter: drop-shadow(0 2px 6px rgba(20, 30, 50, 0.18));
+}
+.wx3-mk:hover,
+.wx3-mk.active {
+  transform: translate(-50%, calc(-100% + var(--mk-offset))) scale(1.05);
 }
 .wx3-mk-name {
   font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em;
   text-transform: uppercase; color: #0f1a2a;
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.9);
   padding: 2px 6px; border-radius: 100px;
   white-space: nowrap;
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis;
   border: 1px solid rgba(20, 30, 50, 0.08);
 }
 .wx3-mk.active .wx3-mk-name { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -2127,6 +2142,38 @@ input[type="range"]::-moz-range-thumb {
 .wx3-stage .summary { font-size: 11px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wx3-stage-spark { display: flex; align-items: end; gap: 6px; margin-top: 4px; }
 .wx3-stage-spark .mm { font-family: var(--mono); font-size: 10px; color: var(--fg-dim); white-space: nowrap; }
+
+/* AM / MIDDAY / EVE chips inside stage cards — replaces the sparkline. */
+.wx3-period-row { display: grid; gap: 4px; margin-top: 6px; }
+.wx3-period-chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.wx3-period-chips .chip {
+  display: grid; justify-items: center; gap: 2px;
+  padding: 5px 2px;
+  background: color-mix(in oklch, var(--accent) 5%, var(--bg));
+  border-radius: 6px;
+  min-width: 0;
+}
+.wx3-period-chips .chip.empty { opacity: 0.5; }
+.wx3-period-chips .period {
+  font-family: var(--mono); font-size: 8px; color: var(--fg-faint);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.wx3-period-chips .chip-ic {
+  color: var(--warm);
+  display: inline-flex; align-items: center; gap: 2px;
+  position: relative;
+}
+.wx3-period-chips .chip-ic.cool { color: var(--accent); }
+.wx3-period-chips .chip-ic .drop {
+  color: var(--accent); font-size: 8px; line-height: 1;
+}
+.wx3-period-chips .temp { font-family: var(--mono); font-size: 11px; color: var(--fg); }
+.wx3-period-chips .dash { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); }
+.wx3-period-total {
+  font-family: var(--mono); font-size: 10px; color: var(--fg-dim);
+  text-align: right;
+}
+.wx3-period-total .dry { color: var(--fg-faint); }
 
 .wx3-spark {
   flex: 1; min-width: 0;
@@ -2293,15 +2340,81 @@ input[type="range"]::-moz-range-thumb {
 .wx3-climate .grid .v { font-family: var(--mono); font-size: 18px; color: var(--fg); margin-top: 4px; display: block; }
 .wx3-climate .note { margin: 0; font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--fg-dim); }
 
-/* Left-column extras */
-.wx3-outlook { display: grid; gap: 10px; }
-.wx3-outlook .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-.wx3-outlook .row.split { flex-direction: column; align-items: stretch; gap: 2px; }
-.wx3-outlook .l { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-faint); }
-.wx3-outlook .v { font-family: var(--mono); font-size: 14px; color: var(--fg); text-align: right; }
-.wx3-outlook .row.split .v { text-align: left; }
-.wx3-outlook .v em { display: block; font-style: normal; color: var(--fg-dim); font-size: 11px; margin-top: 1px; }
+/* Left-column extras — tour outlook visual card */
 .wx3-outlook-note { font-family: var(--serif); font-style: italic; color: var(--fg-dim); font-size: 13px; line-height: 1.4; }
+
+.wx3-outlook2 { display: grid; gap: 14px; }
+
+.wx3-stat-tiles {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+}
+.wx3-stat-tiles .tile {
+  display: grid; justify-items: center; gap: 3px;
+  padding: 10px 4px;
+  background: color-mix(in oklch, var(--accent) 7%, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+.wx3-stat-tiles .tile .ic { color: var(--accent); display: grid; place-items: center; }
+.wx3-stat-tiles .tile .val { font-family: var(--mono); font-size: 14px; color: var(--fg); }
+.wx3-stat-tiles .tile .lbl {
+  font-family: var(--mono); font-size: 8px; color: var(--fg-faint);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+
+.wx3-bestworst { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wx3-bw-card {
+  display: grid; gap: 3px; text-align: left;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--ok) 8%, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: inherit;
+  font-family: inherit;
+  transition: border-color .15s ease, transform .15s ease, background .15s ease;
+}
+.wx3-bw-card.tough { background: color-mix(in oklch, var(--warm) 10%, var(--bg)); }
+.wx3-bw-card:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.wx3-bw-card .hdr {
+  font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.wx3-bw-card .stg { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.wx3-bw-card .city {
+  font-size: 13px; color: var(--fg); font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wx3-bw-card .cond { font-family: var(--mono); font-size: 10px; color: var(--fg-dim); }
+
+.wx3-glance { display: grid; gap: 4px; margin-top: 4px; }
+.wx3-glance .lbl {
+  font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.wx3-glance .dots { display: flex; gap: 4px; }
+.wx3-glance .nums {
+  display: flex; gap: 4px;
+  font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
+}
+.wx3-glance .nums span,
+.wx3-glance .dot {
+  flex: 1; min-width: 12px;
+  display: grid; place-items: center;
+}
+.wx3-glance .dot {
+  height: 14px; border-radius: 50%;
+  cursor: pointer; border: 1.5px solid transparent;
+  padding: 0;
+  transition: transform .12s ease, border-color .12s ease;
+}
+.wx3-glance .dot:hover { transform: scale(1.25); }
+.wx3-glance .dot.active { border-color: var(--fg); }
+.wx3-glance .dot.sunny   { background: var(--warm); }
+.wx3-glance .dot.cloudy  { background: color-mix(in oklch, var(--accent) 55%, var(--bg-2)); }
+.wx3-glance .dot.rain    { background: var(--accent); }
+.wx3-glance .dot.unknown { background: var(--fg-faint); opacity: 0.45; }
 
 .wx3-tips { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .wx3-tips li {
