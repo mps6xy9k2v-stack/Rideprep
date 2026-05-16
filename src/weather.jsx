@@ -290,71 +290,9 @@ function summariseStages(stops, cache, tour, startCoords) {
   };
 }
 
-function packingTips(stops, cache, tour, startCoords) {
-  const tips = [];
-  const f = stops.map((s, i) => ({ s, i, entry: cache[cacheKey(i, s.date, tour.id)] }));
-  const fc = f.filter((x) => x.s.kind === "forecast" && x.entry && x.entry.daily);
-  const cl = f.filter((x) => x.s.kind === "climate" && x.entry && x.entry.climate);
-
-  const rainStages = fc.filter((x) => (x.entry.daily.precipitation_sum || 0) > 2).map((x) => x.i + 1);
-  if (rainStages.length) tips.push(`Rain jacket recommended for Stage ${rainStages.join(", ")}`);
-
-  if (fc.some((x) => x.entry.daily.temperature_2m_max > 25)) {
-    tips.push("Sunscreen essential — daily highs above 25°");
-  }
-
-  const coldStages = fc.filter((x) => x.entry.daily.temperature_2m_min < 8).map((x) => x.i + 1);
-  if (coldStages.length) {
-    tips.push(`Cold mornings on Stage ${coldStages.join(", ")} — arm warmers recommended`);
-  }
-
-  const headwindStages = [];
-  fc.forEach((x) => {
-    const d = x.entry.daily;
-    if (d.wind_direction_10m_dominant == null) return;
-    const startC = startCoords[x.i];
-    const endC = { lat: x.s.lat, lng: x.s.lng };
-    if (!startC || endC.lat == null) return;
-    const cls = classifyWind(bearingDeg(startC, endC), d.wind_direction_10m_dominant, d.wind_speed_10m_max || 0);
-    if (cls.kind === "head" && (d.wind_speed_10m_max || 0) > 20) headwindStages.push(x.i + 1);
-  });
-  if (headwindStages.length) {
-    tips.push(`Strong headwind expected on Stage ${headwindStages.join(", ")}`);
-  }
-
-  const allDayWet = fc.filter((x) =>
-    (x.entry.daily.precipitation_probability_max ?? 0) > 50
-    && (x.entry.daily.precipitation_sum || 0) > 1
-  ).map((x) => x.i + 1);
-  if (allDayWet.length) {
-    tips.push(`Pack waterproof bags for Stage ${allDayWet.join(", ")}`);
-  }
-
-  // Mild & dry fallback — only when nothing else fired and the tour looks calm.
-  if (!tips.length && fc.length) {
-    const avgH = mean(fc.map((x) => x.entry.daily.temperature_2m_max));
-    const totRain = sumArr(fc.map((x) => x.entry.daily.precipitation_sum || 0));
-    if (avgH != null && avgH >= 14 && avgH <= 25 && totRain < 2) {
-      tips.push("Conditions look favourable across the tour, light layers should be enough");
-    }
-  }
-
-  // Climate-only mode: derive from monthly averages.
-  let climateMode = false;
-  if (!fc.length && cl.length) {
-    climateMode = true;
-    const avgHigh = mean(cl.map((x) => x.entry.climate.meanHigh));
-    const avgLow = mean(cl.map((x) => x.entry.climate.meanLow));
-    const monthRain = mean(cl.map((x) => x.entry.climate.monthRainMm));
-    const m = new Date(cl[0].s.date).getMonth();
-    if (avgHigh != null) tips.push(`${monthName(m)} typically averages ${Math.round(avgHigh)}° highs in this area`);
-    if (avgHigh != null && avgHigh > 25) tips.push("Hot conditions likely — bring sun protection and extra water");
-    if (avgLow != null && avgLow < 8) tips.push("Cool mornings likely — pack warm layers");
-    if (monthRain != null && monthRain > 80) tips.push(`Wet season — about ${Math.round(monthRain)} mm typical rainfall`);
-  }
-
-  return { tips: tips.slice(0, 5), climateMode, climateMonth: cl.length ? new Date(cl[0].s.date).getMonth() : null };
-}
+// (Per-stage packing tips now generated via Claude API; the per-stage
+// rule-based fallback lives in localTipsForStage further down. The old
+// tour-aggregate packingTips() helper has been removed.)
 
 // ---------- Small visual pieces ----------
 function WindArrow({ deg = 0, color = "var(--fg)", size = 28 }) {
@@ -818,20 +756,212 @@ function TourOutlookCard({ summary }) {
   );
 }
 
-function PackingTipsCard({ tipsResult }) {
-  const { tips, climateMode, climateMonth } = tipsResult || { tips: [] };
+// Per-stage rule-based fallback. Used when no Anthropic API key is
+// configured or when the Claude call fails — keeps the card useful in
+// either case.
+function localTipsForStage(stop, entry, startCoord) {
+  if (!stop || !entry) return [];
+  const tips = [];
+  if (stop.kind === "forecast" && entry.daily) {
+    const d = entry.daily;
+    if ((d.precipitation_sum || 0) > 2) tips.push("Rain jacket recommended for this stage");
+    if (d.temperature_2m_max > 25) tips.push("Sunscreen essential — high above 25°");
+    if (d.temperature_2m_min < 8) tips.push("Cold morning — arm warmers recommended");
+    if (startCoord && d.wind_direction_10m_dominant != null && stop.lat != null) {
+      const cls = classifyWind(
+        bearingDeg(startCoord, { lat: stop.lat, lng: stop.lng }),
+        d.wind_direction_10m_dominant,
+        d.wind_speed_10m_max || 0
+      );
+      if (cls.kind === "head" && (d.wind_speed_10m_max || 0) > 20) {
+        tips.push("Strong headwind expected — pack an extra wind-blocking layer");
+      }
+    }
+    if ((d.precipitation_probability_max ?? 0) > 50 && (d.precipitation_sum || 0) > 1) {
+      tips.push("Pack waterproof bags — sustained rain likely");
+    }
+    if (!tips.length) {
+      tips.push("Conditions look favourable for this stage — light layers should be enough");
+    }
+  } else if (stop.kind === "climate" && entry.climate) {
+    const c = entry.climate;
+    const m = new Date(stop.date).getMonth();
+    if (c.meanHigh != null) tips.push(`${monthName(m)} typically averages ${Math.round(c.meanHigh)}° highs in this area`);
+    if (c.meanHigh != null && c.meanHigh > 25) tips.push("Hot conditions likely — bring sun protection and extra water");
+    if (c.meanLow != null && c.meanLow < 8) tips.push("Cool mornings likely — pack warm layers");
+    if (c.monthRainMm != null && c.monthRainMm > 80) tips.push(`Wet season — about ${Math.round(c.monthRainMm)} mm typical rainfall`);
+  }
+  return tips.slice(0, 5);
+}
+
+function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
+  const [aiTips, setAiTips] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  // Build the request context. null until we have weather data for the
+  // currently selected stage — we never call the API with empty inputs.
+  const ctx = useMemo(() => {
+    if (!stop || !entry || !tour) return null;
+    let weather = null;
+    if (stop.kind === "forecast" && entry.daily) {
+      weather = {
+        kind: "forecast",
+        tempMin: entry.daily.temperature_2m_min,
+        tempMax: entry.daily.temperature_2m_max,
+        precipMm: entry.daily.precipitation_sum || 0,
+        precipProb: entry.daily.precipitation_probability_max || 0,
+        windKmh: entry.daily.wind_speed_10m_max || 0,
+        weatherCode: entry.daily.weathercode,
+      };
+    } else if (stop.kind === "climate" && entry.climate) {
+      weather = {
+        kind: "climate",
+        tempMin: entry.climate.meanLow,
+        tempMax: entry.climate.meanHigh,
+        monthRainMm: entry.climate.monthRainMm,
+        rainDayFrac: entry.climate.rainDayFrac,
+        windKmh: entry.climate.windKmh,
+      };
+    }
+    if (!weather) return null;
+    return {
+      tour: {
+        from: tour.from || (tour.name || "").split(" → ")[0],
+        to: tour.to || (tour.name || "").split(" → ")[1],
+        totalKm: tour.totalKm,
+        totalAscent: tour.totalAscent,
+        stageCount: tour.stageCount,
+      },
+      stage: {
+        index: stopIdx,
+        from: stop.from,
+        to: stop.to,
+        km: stop.km,
+        ascent: stop.ascent,
+        descent: stop.descent,
+      },
+      weather,
+      month: monthName(new Date(stop.date).getMonth()),
+      training,
+    };
+  }, [stop, stopIdx, entry, tour, training]);
+
+  const fallbackTips = useMemo(
+    () => localTipsForStage(stop, entry, startCoord),
+    [stop, entry, startCoord]
+  );
+
+  const key = useMemo(() => {
+    const RP = window.RP_PackingTips;
+    if (!ctx || !RP || stop == null || stop.lat == null || stop.lng == null) return null;
+    return RP.cacheKey({
+      lat: stop.lat, lng: stop.lng, date: stop.date,
+      weatherHash: RP.weatherHash(ctx),
+    });
+  }, [ctx, stop]);
+
+  // Fetch on context change (different stage, or weather data updated).
+  // Skips entirely if no API key — the local fallback is shown instead.
+  useEffect(() => {
+    const RP = window.RP_PackingTips;
+    if (!ctx || !key || !RP) return;
+    const cached = RP.readCache(key);
+    if (cached && Array.isArray(cached.tips) && cached.tips.length) {
+      setAiTips(cached.tips);
+      setErrorMsg(null);
+      return;
+    }
+    if (!window.__ANTHROPIC_API_KEY__) {
+      // Silent — the local fallback already renders.
+      setAiTips(null);
+      setErrorMsg(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setErrorMsg(null);
+    RP.fetchPackingTips(ctx)
+      .then((tips) => {
+        if (cancelled) return;
+        setAiTips(tips);
+        RP.writeCache(key, { tips, ts: Date.now() });
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.warn("[packingTips] fetch failed:", e);
+        setErrorMsg(String((e && e.message) || e));
+        setAiTips(null);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ctx, key]);
+
+  function regenerate() {
+    const RP = window.RP_PackingTips;
+    if (!RP || !ctx || !key) return;
+    if (!window.__ANTHROPIC_API_KEY__) return;
+    RP.clearCache(key);
+    setLoading(true);
+    setErrorMsg(null);
+    RP.fetchPackingTips(ctx)
+      .then((tips) => {
+        setAiTips(tips);
+        RP.writeCache(key, { tips, ts: Date.now() });
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn("[packingTips] regenerate failed:", e);
+        setErrorMsg(String((e && e.message) || e));
+        setAiTips(null);
+      })
+      .finally(() => setLoading(false));
+  }
+
+  const apiReady = !!window.__ANTHROPIC_API_KEY__;
+  const showSkeleton = loading && !aiTips;
+  const tipsToShow = aiTips && aiTips.length ? aiTips : fallbackTips;
+  const usingFallback = !aiTips && !loading && tipsToShow.length > 0;
+  const climateMode = stop && stop.kind === "climate";
+
   return (
     <div className="card">
-      <div className="section-title"><h2 style={{ fontSize: 16 }}>Packing tips</h2></div>
-      {tips.length ? (
+      <div className="section-title">
+        <h2 style={{ fontSize: 16 }}>Packing tips</h2>
+        {apiReady && (
+          <button
+            type="button"
+            className="wx3-tips-regen"
+            title={loading ? "Generating…" : "Regenerate from Claude"}
+            onClick={regenerate}
+            disabled={loading || !ctx}
+            aria-label="Regenerate packing tips"
+          >
+            <span className={loading ? "spin" : ""}>↻</span>
+          </button>
+        )}
+      </div>
+      {showSkeleton ? (
+        <div className="wx3-tips-skel" aria-hidden>
+          <div /><div /><div /><div /><div />
+        </div>
+      ) : tipsToShow.length ? (
         <ul className="wx3-tips">
-          {tips.map((t, i) => <li key={i}>{t}</li>)}
+          {tipsToShow.map((t, i) => <li key={i}>{t}</li>)}
         </ul>
       ) : (
-        <div className="wx3-tips-empty">Waiting for forecast data.</div>
+        <div className="wx3-tips-empty">Waiting for weather data.</div>
       )}
-      {climateMode && climateMonth != null && (
-        <div className="wx3-tips-note">Based on historical {monthName(climateMonth)} averages</div>
+      {climateMode && tipsToShow.length > 0 && (
+        <div className="wx3-tips-note">
+          Based on historical {monthName(new Date(stop.date).getMonth())} averages
+        </div>
+      )}
+      {usingFallback && errorMsg && (
+        <div className="wx3-tips-note" title={errorMsg}>
+          Showing local tips — Claude API unavailable
+        </div>
       )}
     </div>
   );
@@ -1029,16 +1159,26 @@ function WeatherTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tour && tour.id, stopBuckets.map((s) => `${s.lat},${s.lng},${s.date},${s.kind}`).join("|")]);
 
-  // Tour-level aggregates and packing tips — recomputed whenever any cache
-  // entry settles. Cheap; runs once per render.
+  // Tour-level aggregates for the outlook card. Cheap; runs once per render.
   const tourSummary = useMemo(
     () => tour ? summariseStages(stopBuckets, cache, tour, stageStartCoords) : null,
     [stopBuckets, cache, tour, stageStartCoords]
   );
-  const tipsResult = useMemo(
-    () => tour ? packingTips(stopBuckets, cache, tour, stageStartCoords) : null,
-    [stopBuckets, cache, tour, stageStartCoords]
-  );
+
+  // Training context for AI packing tips — read once from the Training tab's
+  // saved inputs. Fitness level + weekly hours feed into the prompt.
+  const training = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("ridePrep:planInputs");
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      return {
+        fitnessLevel: obj.fitnessLevel || (obj.fitnessMode === "FTP" && obj.ftp ? `FTP ${obj.ftp} W` : null),
+        weeklyHours: obj.weeklyHoursTarget || obj.weeklyHours || null,
+        eventType: obj.eventType || null,
+      };
+    } catch { return null; }
+  }, []);
 
   if (tours.length === 0) return <EmptyState reason="no-tours" />;
   if (!tour) return <EmptyState reason="no-selection" />;
@@ -1077,7 +1217,14 @@ function WeatherTab() {
           </div>
 
           <TourOutlookCard summary={tourSummary} />
-          <PackingTipsCard tipsResult={tipsResult} />
+          <PackingTipsCard
+            stop={active}
+            stopIdx={safeIdx}
+            entry={activeEntry}
+            tour={tour}
+            training={training}
+            startCoord={startCoord}
+          />
         </div>
 
         <div className="wx3-right">
