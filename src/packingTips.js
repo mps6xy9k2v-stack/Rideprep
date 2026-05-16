@@ -112,8 +112,9 @@ function buildPrompt(ctx) {
 }
 
 async function fetchPackingTips(ctx) {
+  const proxyUrl = window.__PACKING_TIPS_PROXY_URL__;
   const apiKey = window.__GEMINI_API_KEY__;
-  if (!apiKey) throw new Error("No Gemini API key configured");
+  if (!proxyUrl && !apiKey) throw new Error("No proxy URL or Gemini API key configured");
 
   const body = {
     contents: [{ parts: [{ text: buildPrompt(ctx) }] }],
@@ -123,7 +124,12 @@ async function fetchPackingTips(ctx) {
     },
   };
 
-  const res = await fetch(`${ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
+  // Prefer the proxy when set — keeps the key server-side. Direct mode
+  // is the local-dev / private-repo escape hatch.
+  const url = proxyUrl
+    ? proxyUrl
+    : `${ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

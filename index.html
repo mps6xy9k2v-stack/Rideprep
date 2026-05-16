@@ -2831,12 +2831,18 @@ input[type="range"]::-moz-range-thumb {
   // https://openrouteservice.org
   window.__ORS_API_KEY__ = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjM0ZmRkYmVlZDk1MzQxODJhMGI5NzdmYzY4MDQ0YzMzIiwiaCI6Im11cm11cjY0In0=";
 
-  // Google Gemini API key for AI-generated packing tips
-  // (gemini-2.0-flash, free tier). Leave empty to fall back to the
-  // local rule-based packing tips. NEVER commit a real key on a public
-  // repo — GitHub's secret scanning forwards it to Google, who will
-  // auto-revoke it within minutes. For production, proxy the request
-  // server-side and restrict the key by HTTP referrer in GCP Console.
+  // Cloudflare Workers proxy URL for AI packing tips. The proxy holds
+  // the Gemini API key server-side, so this URL can be public safely.
+  // Leave empty to fall back to the direct __GEMINI_API_KEY__ path
+  // below, or to the local rule-based tips if both are empty.
+  // See cloudflare-worker/worker.js for the proxy source and setup.
+  window.__PACKING_TIPS_PROXY_URL__ = "";
+
+  // Direct Google Gemini API key — only used if __PACKING_TIPS_PROXY_URL__
+  // is empty AND the page is loaded from a context where exposing the
+  // key is acceptable (local file://, localhost, private repo). NEVER
+  // commit a real key here on a public repo — GitHub's secret scanning
+  // forwards it to Google, who will auto-revoke it within minutes.
   // Get a key at https://aistudio.google.com/app/apikey
   window.__GEMINI_API_KEY__ = "AIzaSyDfHU7apq0KCyYpCFZaxs_fnh6BsKNaN4I";
 </script>

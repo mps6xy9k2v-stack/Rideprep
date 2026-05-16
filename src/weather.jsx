@@ -1187,7 +1187,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
       setErrorMsg(null);
       return;
     }
-    if (!window.__GEMINI_API_KEY__) {
+    if (!(window.__PACKING_TIPS_PROXY_URL__ || window.__GEMINI_API_KEY__)) {
       // Silent — the local fallback already renders.
       setAiTips(null);
       setErrorMsg(null);
@@ -1216,7 +1216,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
   function regenerate() {
     const RP = window.RP_PackingTips;
     if (!RP || !ctx || !key) return;
-    if (!window.__GEMINI_API_KEY__) return;
+    if (!(window.__PACKING_TIPS_PROXY_URL__ || window.__GEMINI_API_KEY__)) return;
     RP.clearCache(key);
     setLoading(true);
     setErrorMsg(null);
@@ -1234,7 +1234,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
       .finally(() => setLoading(false));
   }
 
-  const apiReady = !!window.__GEMINI_API_KEY__;
+  const apiReady = !!(window.__PACKING_TIPS_PROXY_URL__ || window.__GEMINI_API_KEY__);
   const showSkeleton = loading && !aiTips;
   const tipsToShow = aiTips && aiTips.length ? aiTips : fallbackTips;
   const usingFallback = !aiTips && !loading && tipsToShow.length > 0;
