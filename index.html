@@ -2836,7 +2836,7 @@ input[type="range"]::-moz-range-thumb {
   // Leave empty to fall back to the direct __GEMINI_API_KEY__ path
   // below, or to the local rule-based tips if both are empty.
   // See cloudflare-worker/worker.js for the proxy source and setup.
-  window.__PACKING_TIPS_PROXY_URL__ = "";
+  window.__PACKING_TIPS_PROXY_URL__ = "https://rideprep-gemini-proxy.felixhoreis-fh.workers.dev";
 
   // Direct Google Gemini API key — only used if __PACKING_TIPS_PROXY_URL__
   // is empty AND the page is loaded from a context where exposing the
