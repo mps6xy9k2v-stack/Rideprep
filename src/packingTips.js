@@ -117,23 +117,32 @@ Rules:
 - Respond with a JSON array of strings only — no markdown, no preamble, no trailing text`;
 
 async function fetchPackingTips(ctx) {
-  const apiKey = window.__ANTHROPIC_API_KEY__;
-  if (!apiKey) throw new Error("No Anthropic API key configured");
+  const proxyUrl = window.__PACKING_TIPS_PROXY_URL__;
+  const directKey = window.__ANTHROPIC_API_KEY__;
+  if (!proxyUrl && !directKey) throw new Error("No proxy URL or Anthropic API key configured");
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const body = {
+    model: MODEL,
+    max_tokens: 1000,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: buildUserMessage(ctx) }],
+  };
+
+  // Prefer the proxy when set — keeps the key server-side. Direct mode
+  // is kept as a legacy escape hatch for local dev (file://) or private
+  // repos where exposing the key in the page is acceptable.
+  const endpoint = proxyUrl || "https://api.anthropic.com/v1/messages";
+  const headers = { "Content-Type": "application/json" };
+  if (!proxyUrl) {
+    headers["x-api-key"] = directKey;
+    headers["anthropic-version"] = ANTHROPIC_VERSION;
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  }
+
+  const res = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": ANTHROPIC_VERSION,
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildUserMessage(ctx) }],
-    }),
+    headers,
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     let detail = res.statusText;
