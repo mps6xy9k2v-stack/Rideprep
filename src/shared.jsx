@@ -17,13 +17,20 @@ function fmtElev(m, units) {
   return `${Math.round(m)} m`;
 }
 
-// Tiny SVG bike icon used in the brand mark.
+// Brand-mark bicycle. A road-bike profile — two wheels, diamond frame,
+// drop bars, saddle — sized to fill most of the circular mark.
 function BikeIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="6" cy="17" r="3.5" />
-      <circle cx="18" cy="17" r="3.5" />
-      <path d="M6 17 L11 8 L15 17 M11 8 L13 5 L16 5 M11 8 L9 5 L7 5" />
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5.5" cy="16.5" r="4.6" />
+      <circle cx="18.5" cy="16.5" r="4.6" />
+      <path d="M5.5 16.5 L11.6 7.6 L16.6 8.2" />
+      <path d="M11.6 7.6 L12.2 16.5" />
+      <path d="M16.6 8.2 L12.2 16.5" />
+      <path d="M12.2 16.5 L5.5 16.5" />
+      <path d="M16.6 8.2 L18.5 16.5" />
+      <path d="M9.6 6.3 L13.4 6.3" />
+      <path d="M16.6 8.2 L17.4 6.1 L19.4 6.3" />
     </svg>
   );
 }
