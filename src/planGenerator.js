@@ -68,8 +68,59 @@ const ZONES = {
   Z6: { name: "Anaerobic",       if: 1.35 },
 };
 
-// Average rolling speed per zone (km/h) used to derive distance from time.
-const ZONE_KMH = { Z1: 22, Z2: 26, Z3: 29, Z4: 31, Z5: 31, Z6: 30 };
+// ── Speed model ─────────────────────────────────────────────────────────────
+//
+// Body data (height, weight) affects ONLY estimated speed, and therefore
+// ONLY workout distance. It does NOT touch TSS (normalised to the athlete's
+// own threshold) or weekly hours (driven by time availability and event).
+// See the per-zone reference speeds and scaling factors below.
+
+// Reference athlete the model scales from: 175 cm, 75 kg, FTP 250 W.
+const REF_FTP    = 250;
+const REF_HEIGHT = 175;
+const REF_WEIGHT = 75;
+
+// Flat-road rolling speeds (km/h) per zone for the reference athlete.
+const REF_FLAT_KMH  = { Z1: 24, Z2: 28, Z3: 32, Z4: 35, Z5: 37, Z6: 38 };
+// Climbing speeds (km/h) per zone — roughly 55-60% of the flat reference,
+// since climbing is gravity-limited rather than aero-limited.
+const REF_CLIMB_KMH = { Z1: 13, Z2: 15, Z3: 16, Z4: 19, Z5: 21, Z6: 21 };
+
+// Body Surface Area in m^2 (DuBois & DuBois, 1916).
+// Used here as a proxy for aerodynamic frontal area (CdA scales with BSA).
+function bodySurfaceArea(heightCm, weightKg) {
+  return 0.007184
+    * Math.pow(heightCm, 0.725)
+    * Math.pow(weightKg, 0.425);
+}
+const REF_BSA = bodySurfaceArea(REF_HEIGHT, REF_WEIGHT);
+
+// Returns { flat, climb } speed lookup tables personalised to the athlete.
+//
+// Flat speed scales with two physiologically motivated factors:
+//   - power: faster, but sub-linearly — aero drag rises with v^3, so a given
+//     % gain in power buys a much smaller % gain in speed (exponent 0.33).
+//   - frontal area: a larger body (more BSA) means more drag, so speed falls
+//     as BSA rises (exponent 0.40 on the inverse ratio).
+// Climb speed scales with power-to-weight, since climbing is gravity-limited
+// and aerodynamics barely matter at low speed.
+function buildSpeedModel(ftp, weightKg, heightCm) {
+  const bsa      = bodySurfaceArea(heightCm, weightKg);
+  const ftpFac   = Math.pow(ftp / REF_FTP, 0.33);
+  const bsaFac   = Math.pow(REF_BSA / bsa, 0.40);
+  const wkg      = ftp / weightKg;
+  const refWkg   = REF_FTP / REF_WEIGHT;
+  const wkgRatio = wkg / refWkg;
+  const flat = {}, climb = {};
+  for (const z of ["Z1", "Z2", "Z3", "Z4", "Z5", "Z6"]) {
+    flat[z]  = REF_FLAT_KMH[z]  * ftpFac * bsaFac;
+    climb[z] = REF_CLIMB_KMH[z] * wkgRatio;
+  }
+  return { flat, climb };
+}
+
+// Fallback when no athlete data is available — equals the reference athlete.
+const DEFAULT_SPEED_MODEL = buildSpeedModel(REF_FTP, REF_WEIGHT, REF_HEIGHT);
 
 // ============================================================================
 // Validation
@@ -206,7 +257,8 @@ function computeWeeklyHours(weekNum, peakHours, pathway, phase, phases) {
 // Each builder returns a fully-formed workout object: name, type,
 // primaryZone, description, durationMin, distanceKm, tss, intervals[].
 
-function makeWorkout(spec) {
+function makeWorkout(spec, speedModel) {
+  const sm = speedModel || DEFAULT_SPEED_MODEL;
   const intervals = spec.intervals.map(iv => ({ ...iv }));
   const durationMin = intervals.reduce((s, iv) => s + iv.durationMin, 0);
   return {
@@ -215,7 +267,7 @@ function makeWorkout(spec) {
     primaryZone: spec.primaryZone,
     description: spec.description,
     durationMin,
-    distanceKm: distanceForIntervals(intervals),
+    distanceKm: distanceForIntervals(intervals, sm.flat),
     tss: tssForIntervals(intervals),
     intervals,
   };
@@ -230,20 +282,46 @@ function tssForIntervals(intervals) {
   return Math.round(tss);
 }
 
-function distanceForIntervals(intervals) {
+// Distance from time, using flat speeds only. TSS is computed separately and
+// is unaffected by speed — see tssForIntervals.
+function distanceForIntervals(intervals, speedKmh) {
+  const spd = speedKmh || DEFAULT_SPEED_MODEL.flat;
   let km = 0;
-  for (const iv of intervals) km += (iv.durationMin / 60) * ZONE_KMH[iv.zone];
+  for (const iv of intervals) km += (iv.durationMin / 60) * spd[iv.zone];
   return Math.round(km);
+}
+
+// Re-derive a workout's distance once it carries a climbing focus, blending
+// flat and climb speeds. The blend weight grows with the ride's gradient
+// (m/km from targetElevation), because steeper rides spend more time at the
+// low, gravity-limited climb speed. Only distanceKm changes — duration, TSS
+// and intervals are untouched. Capped at 0.6 since even mountainous rides are
+// far from 100% climbing.
+function withClimbingFocus(workout, targetElevation, speedModel) {
+  const sm = speedModel || DEFAULT_SPEED_MODEL;
+  const mPerKm = workout.distanceKm > 0 ? targetElevation / workout.distanceKm : 0;
+  const climbWeight = Math.min(mPerKm / 40, 0.6);
+  let km = 0;
+  for (const iv of workout.intervals) {
+    const spd = sm.flat[iv.zone] * (1 - climbWeight) + sm.climb[iv.zone] * climbWeight;
+    km += (iv.durationMin / 60) * spd;
+  }
+  return {
+    ...workout,
+    distanceKm: Math.round(km),
+    hasClimbingFocus: true,
+    targetElevation,
+  };
 }
 
 // ── Concrete workouts ───────────────────────────────────────────────────────
 
-function endurance(min, targetElevation = null) {
+function endurance(min, targetElevation = null, sm = null) {
   const main = Math.max(20, min - 20);
   const desc = targetElevation
     ? `Endurance, target ~${targetElevation} m elevation`
     : "Steady Z2, smooth cadence 85-95";
-  const w = makeWorkout({
+  let w = makeWorkout({
     name: "Endurance",
     type: "endurance",
     primaryZone: "Z2",
@@ -253,22 +331,22 @@ function endurance(min, targetElevation = null) {
       { zone: "Z2", durationMin: main, label: "Main set" },
       { zone: "Z1", durationMin: 10, label: "Cool-down" },
     ],
-  });
-  if (targetElevation) { w.hasClimbingFocus = true; w.targetElevation = targetElevation; }
+  }, sm);
+  if (targetElevation) w = withClimbingFocus(w, targetElevation, sm);
   return w;
 }
 
-function recoverySpin(min = 40) {
+function recoverySpin(min = 40, sm = null) {
   return makeWorkout({
     name: "Recovery Spin",
     type: "recovery",
     primaryZone: "Z1",
     description: "Easy spin, high cadence, very low load",
     intervals: [{ zone: "Z1", durationMin: min, label: "Easy spin" }],
-  });
+  }, sm);
 }
 
-function tempoZ3(min = 60) {
+function tempoZ3(min = 60, sm = null) {
   const tail = Math.max(5, min - 55);
   return makeWorkout({
     name: "Tempo",
@@ -282,10 +360,10 @@ function tempoZ3(min = 60) {
       { zone: "Z3", durationMin: 20, label: "Tempo 2" },
       { zone: "Z1", durationMin: tail, label: "Cool-down" },
     ],
-  });
+  }, sm);
 }
 
-function sweetSpot(min = 70) {
+function sweetSpot(min = 70, sm = null) {
   // Two sustained sets at 88-92% FTP. Length scales with target duration.
   const setMin = min >= 80 ? 20 : 15;
   return makeWorkout({
@@ -300,10 +378,10 @@ function sweetSpot(min = 70) {
       { zone: "Z3", durationMin: setMin, label: "SS 2" },
       { zone: "Z1", durationMin: 10, label: "Cool-down" },
     ],
-  });
+  }, sm);
 }
 
-function threshold(min = 65) {
+function threshold(min = 65, sm = null) {
   const sets = 3, setMin = 10, recMin = 5;
   const intervals = [{ zone: "Z1", durationMin: 10, label: "Warm-up" }];
   for (let i = 0; i < sets; i++) {
@@ -317,10 +395,10 @@ function threshold(min = 65) {
     primaryZone: "Z4",
     description: `${sets}x${setMin} min @ 95-100% FTP`,
     intervals,
-  });
+  }, sm);
 }
 
-function vo2max(min = 60, micro = false) {
+function vo2max(min = 60, micro = false, sm = null) {
   // 5x3 min @ 110-115% FTP, equal recovery. Micro variant: 3x2 min for taper.
   const sets   = micro ? 3 : 5;
   const setMin = micro ? 2 : 3;
@@ -337,10 +415,10 @@ function vo2max(min = 60, micro = false) {
     primaryZone: "Z5",
     description: `${sets}x${setMin} min @ 110-115% FTP, equal recovery`,
     intervals,
-  });
+  }, sm);
 }
 
-function longRide(min, phaseName, eventType) {
+function longRide(min, phaseName, eventType, sm = null) {
   // Mostly Z2; Build/Peak insert a Z3 block (or race-pace surges in Peak).
   const wuCd = 10;
   const main = Math.max(30, min - 2 * wuCd);
@@ -369,10 +447,10 @@ function longRide(min, phaseName, eventType) {
     primaryZone: "Z2",
     description: desc,
     intervals,
-  });
+  }, sm);
 }
 
-function shortOpener() {
+function shortOpener(sm = null) {
   return makeWorkout({
     name: "Openers",
     type: "openers",
@@ -388,7 +466,7 @@ function shortOpener() {
       { zone: "Z5", durationMin: 1,  label: "Opener 3" },
       { zone: "Z1", durationMin: 8,  label: "Cool-down" },
     ],
-  });
+  }, sm);
 }
 
 // ============================================================================
@@ -424,38 +502,39 @@ function climbingTierFromDensity(d) {
 // Returns an array of intensity workout BUILDERS appropriate for the phase.
 // The builders are zero-arg; the composer just calls them in order, cycling
 // the array if it needs more intensity slots than the array has entries.
-function intensityBuildersForPhase(phase, pathway, eventType) {
+// `sm` is the athlete speed model, threaded into each builder for distance.
+function intensityBuildersForPhase(phase, pathway, eventType, sm) {
   const p = phase.name;
 
   if (pathway === "timeCrunched") {
-    if (p === "Adapt") return [() => sweetSpot(60), () => sweetSpot(60)];
-    if (p === "Build") return [() => threshold(60), () => sweetSpot(60)];
-    if (p === "Peak")  return [() => vo2max(60),    () => threshold(60)];
-    if (p === "Taper") return [() => vo2max(45, true), () => shortOpener()];
-    return [() => sweetSpot(60)];
+    if (p === "Adapt") return [() => sweetSpot(60, sm), () => sweetSpot(60, sm)];
+    if (p === "Build") return [() => threshold(60, sm), () => sweetSpot(60, sm)];
+    if (p === "Peak")  return [() => vo2max(60, false, sm), () => threshold(60, sm)];
+    if (p === "Taper") return [() => vo2max(45, true, sm), () => shortOpener(sm)];
+    return [() => sweetSpot(60, sm)];
   }
 
   // Default pathway. Race events get a slight intensity bias in Build/Peak.
   if (p === "Prep" || p === "Base") {
-    return [() => sweetSpot(70), () => tempoZ3(60)];
+    return [() => sweetSpot(70, sm), () => tempoZ3(60, sm)];
   }
   if (p === "Build") {
-    const a = [() => threshold(70), () => sweetSpot(80)];
-    if (eventType === "Race") a.push(() => vo2max(60));
+    const a = [() => threshold(70, sm), () => sweetSpot(80, sm)];
+    if (eventType === "Race") a.push(() => vo2max(60, false, sm));
     return a;
   }
   if (p === "Peak") {
-    return [() => vo2max(60), () => threshold(65)];
+    return [() => vo2max(60, false, sm), () => threshold(65, sm)];
   }
   if (p === "Taper") {
-    return [() => vo2max(45, true), () => shortOpener()];
+    return [() => vo2max(45, true, sm), () => shortOpener(sm)];
   }
-  return [() => endurance(60)];
+  return [() => endurance(60, null, sm)];
 }
 
 function composeWeek(ctx) {
   const { weekNum, hours, isRecovery, phase, phases, eventType, eventDistance,
-          climbingTier, climbingDensity, pathway } = ctx;
+          climbingTier, climbingDensity, pathway, speedModel } = ctx;
 
   // Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6.
   const days = [
@@ -530,18 +609,14 @@ function composeWeek(ctx) {
   // Build the long ride then annotate with an elevation target for non-flat
   // terrain. Cap effective density at 18 m/km so mountainous events don't
   // produce unrealistic targets on a single ride.
-  let longRideWorkout = longRide(longMin, phase.name, eventType);
+  let longRideWorkout = longRide(longMin, phase.name, eventType, speedModel);
   if (climbingTier !== "flat") {
     const targetElev = Math.round(
       (longRideWorkout.distanceKm * Math.min(climbingDensity, 18)) / 50
     ) * 50;
     if (targetElev > 0) {
-      longRideWorkout = {
-        ...longRideWorkout,
-        description: `Long Ride, target ~${targetElev} m elevation`,
-        hasClimbingFocus: true,
-        targetElevation: targetElev,
-      };
+      longRideWorkout = withClimbingFocus(longRideWorkout, targetElev, speedModel);
+      longRideWorkout.description = `Long Ride, target ~${targetElev} m elevation`;
     }
   }
   days[5].workout = longRideWorkout;
@@ -549,7 +624,7 @@ function composeWeek(ctx) {
 
   // Intensity slots — Tue, then Thu, then Wed for high-volume Build/Peak weeks.
   // Time-crunched plans lean intensity-heavy: even a 2-day week gets Tue.
-  const builders = intensityBuildersForPhase(phase, pathway, eventType);
+  const builders = intensityBuildersForPhase(phase, pathway, eventType, speedModel);
   const slots = [];
   if (pathway === "timeCrunched") {
     if (activeDays >= 2) slots.push(1);                       // Tue
@@ -567,7 +642,7 @@ function composeWeek(ctx) {
     const idx = slots[i];
     let w = builders[i % builders.length]();
     // During recovery weeks, swap intensity for endurance (no elevation hint).
-    if (isRecovery) w = endurance(60);
+    if (isRecovery) w = endurance(60, null, speedModel);
     days[idx].workout = w;
     remainingMin -= w.durationMin;
   }
@@ -604,18 +679,19 @@ function composeWeek(ctx) {
   if (fillIdx.length > 0 && remainingMin > 0) {
     const each = Math.max(40, Math.floor((remainingMin / fillIdx.length) / 5) * 5);
     let hintsUsed = 0;
+    const sm = speedModel || DEFAULT_SPEED_MODEL;
     for (const idx of fillIdx) {
       const dayName = days[idx].day;
       if (dayName === "Fri") {
-        days[idx].workout = recoverySpin(Math.min(45, each));
+        days[idx].workout = recoverySpin(Math.min(45, each), speedModel);
       } else {
         let targetElev = null;
         if (hintsUsed < enduranceHintBudget) {
-          const estKm = (each / 60) * ZONE_KMH.Z2;
+          const estKm = (each / 60) * sm.flat.Z2;
           const raw = Math.round((estKm * enduranceHintDensity) / 50) * 50;
           if (raw > 0) { targetElev = raw; hintsUsed++; }
         }
-        days[idx].workout = endurance(each, targetElev);
+        days[idx].workout = endurance(each, targetElev, speedModel);
       }
     }
   }
@@ -680,6 +756,12 @@ function generatePlan(planInputs) {
   const phases  = buildPhases(weeksUntilEvent, pathway);
   const ftp     = estimateFTP(athlete);
 
+  // Speed model from FTP + body data. This is the ONLY place body data
+  // (height, weight) influences the visible plan: it changes estimated
+  // speed and therefore workout distance. TSS and weekly hours are
+  // deliberately left untouched — see the speed-model comments above.
+  const speedModel = buildSpeedModel(ftp, athlete.weight, athlete.height);
+
   // Time-crunched: peak == user-supplied hours directly. Default: 8 h target,
   // modulated by event type.
   const weeklyHoursTarget = pathway === "timeCrunched" ? opts.weeklyHours : 8;
@@ -710,6 +792,7 @@ function generatePlan(planInputs) {
       climbingDensity: climbingDensityRaw,
       pathway,
       ftp,
+      speedModel,
     }));
   }
 
@@ -748,7 +831,9 @@ function describePlan(plan) {
   ].filter(Boolean).join("\n");
 }
 
-window.RP_PlanGenerator = { generatePlan, describePlan };
+// estimateFTP is exposed so the UI can show the same FTP the generator uses
+// (e.g. the "Estimated FTP" line in Fitness Level mode).
+window.RP_PlanGenerator = { generatePlan, describePlan, estimateFTP };
 
 })();
 
