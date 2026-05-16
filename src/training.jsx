@@ -8,6 +8,7 @@ const Tooltip = window.RP_SHARED.Tooltip;
 
 const TIP = {
   totalVolume: "Total training time across all weeks of the plan.",
+  totalDistance: "Estimated total kilometres across the entire plan. Calculated from your power-to-weight ratio and body size.",
   peakWeek:    "Your highest-volume week, usually 2-3 weeks before the event. After this, training tapers off so you arrive fresh.",
   climbing:    "How hilly your event is, in metres of elevation gain per kilometre. Higher means hillier.",
   tss:         "Training Stress Score. A measure of how demanding this workout is overall.",
@@ -104,7 +105,6 @@ const GLOSSARY = [
 
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
-const TOURS_KEY  = "ridePrep:tours";
 
 const DEFAULT_INPUTS = {
   eventSource: null,
@@ -121,16 +121,47 @@ const DEFAULT_INPUTS = {
 //
 // Tours are local React state in src/tour.jsx (a single object, not an array;
 // no name; no event date; no per-stage dates). They are not persisted by
-// default. The Tour Planner's "Save" button now writes a lightweight record
-// to localStorage under TOURS_KEY:
+// default. The Tour Planner auto-saves into the shared RP_TourStorage
+// module, which Training subscribes to via useSavedTours() below.
 //
 //   { id, name, from, to, totalKm, totalAscent, stageCount, savedAt }
 //
-// Training reads this list to populate the tour selector. The id is stable
-// per from+to pair so re-saving the same route updates the existing entry.
+// Single source of truth for the saved-tour list. Everything goes through
+// window.RP_TourStorage (provided by src/tourStorage.js), which owns the
+// versioned localStorage keys (rideprep:savedTours:v1 etc.) and survives
+// schema migrations transparently. Falls back to [] when the storage
+// module isn't loaded yet (initial render before babel-standalone has
+// evaluated the sibling script — rare but possible).
 function loadSavedTours() {
-  const arr = loadJSON(TOURS_KEY);
-  return Array.isArray(arr) ? arr : [];
+  if (window.RP_TourStorage && typeof window.RP_TourStorage.loadSavedTours === "function") {
+    return window.RP_TourStorage.loadSavedTours();
+  }
+  return [];
+}
+
+// React hook: subscribes to the storage layer's notifications so the
+// Training tour selector updates live when a tour is saved or deleted
+// on the Tour Planner tab — no reload required.
+//
+//   storage event       — fires on cross-tab/window changes.
+//   rideprep:tour-saved — fires in the same tab when saveTour / deleteTour
+//                         / clearAllTours mutates the index.
+function useSavedTours() {
+  const [tours, setTours] = useState(loadSavedTours);
+  useEffect(() => {
+    const refresh = () => setTours(loadSavedTours());
+    window.addEventListener("storage", refresh);
+    window.addEventListener("rideprep:tour-saved", refresh);
+    // Pick up the case where RP_TourStorage finished loading after
+    // useState's initial snapshot (initial value was an empty []).
+    if (tours.length === 0) refresh();
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("rideprep:tour-saved", refresh);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return tours;
 }
 
 function loadJSON(key) {
@@ -225,7 +256,18 @@ function EventSetupCard({ inputs, setInputs, savedTours }) {
               <select
                 className="plan-select"
                 value={tourEvent.tourId || ""}
-                onChange={(e) => setTour({ tourId: e.target.value || null })}
+                onChange={(e) => {
+                  const newId = e.target.value || null;
+                  // Pre-fill the training-target date from the tour's
+                  // Event Start Date so the user doesn't have to type
+                  // it again. Falls back to the existing value (or
+                  // null) when the tour has no date or "" is picked.
+                  const picked = newId ? savedTours.find((t) => t.id === newId) : null;
+                  const nextDate = picked && picked.startDate
+                    ? picked.startDate
+                    : tourEvent.date || null;
+                  setTour({ tourId: newId, date: nextDate });
+                }}
               >
                 <option value="">Select a tour…</option>
                 {savedTours.map((t) => (
@@ -373,9 +415,80 @@ function AthleteProfileCard({ inputs, setInputs }) {
               onChange={(v) => setAthlete({ fitnessLevel: v })}
               wrap
             />
+            <EstimatedFtpLine athlete={athlete} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Live "Estimated FTP" readout shown only in Fitness Level mode. Uses the same
+// estimator the plan generator does, so the UI and the plan stay consistent.
+function EstimatedFtpLine({ athlete }) {
+  if (!athlete.fitnessLevel || !athlete.weight || !athlete.gender) return null;
+  const gen = window.RP_PlanGenerator && window.RP_PlanGenerator.estimateFTP;
+  if (!gen) return null;
+  const ftp = gen({
+    fitnessMode: "Fitness Level",
+    fitnessLevel: athlete.fitnessLevel,
+    weight: athlete.weight,
+    gender: athlete.gender,
+  });
+  if (!ftp || !isFinite(ftp)) return null;
+  return (
+    <p className="est-ftp">
+      <Tooltip content="Calculated from your fitness level, weight, and gender.">
+        <span className="tip-trigger">Estimated FTP</span>
+      </Tooltip>
+      : {ftp} W
+    </p>
+  );
+}
+
+// Collapsed-by-default note explaining how each input shapes the plan.
+function InputInfo() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card input-info">
+      <button
+        type="button"
+        className="input-info-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="input-info-icon" aria-hidden="true">i</span>
+        <span>How do these inputs affect my plan?</span>
+        <span className="input-info-chevron" aria-hidden="true">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="input-info-body">
+          <p>
+            <strong>Fitness level or FTP</strong> sets your training intensities
+            and has the biggest effect on the whole plan.
+          </p>
+          <p>
+            <strong>Weeks until your event</strong> and your <strong>weekly
+            hours</strong> decide the plan length, the phase structure, and your
+            weekly training load.
+          </p>
+          <p>
+            <strong>Event type and elevation</strong> shape the workout mix.
+            Hillier events add climbing focus to your rides.
+          </p>
+          <p>
+            <strong>Height and weight</strong> affect your estimated riding
+            speed, which sets the distance of each session. The effect is
+            intentionally small, since in reality body size only modestly
+            changes cycling speed.
+          </p>
+          <p>
+            <strong>Training stress (TSS)</strong> is measured relative to your
+            own threshold, so it stays consistent no matter your fitness level.
+            That is by design.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -479,6 +592,13 @@ const PHASE_COLOR_VAR = {
 
 const EVENT_LABEL = { race: "Race", sportive: "Sportive", longtour: "Long Tour" };
 
+// Prefer the highest-TSS week within the Peak phase; fall back to overall max.
+function pickPeakWeek(weeks) {
+  const inPeakPhase = weeks.filter((w) => w.phase === "Peak");
+  const pool = inPeakPhase.length > 0 ? inPeakPhase : weeks;
+  return pool.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+}
+
 function zoneColor(zoneId) {
   const z = window.RP_DATA.ZONES.find((x) => x.id === zoneId);
   return z ? z.color : "var(--accent)";
@@ -495,6 +615,14 @@ function fmtDuration(min) {
   const h = Math.floor(min / 60);
   const m = min % 60;
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+}
+
+// Card-style duration: "55 min", "2h 30m", "3h".
+function fmtDurationCard(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `${m} min`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 // Plan starts on the Monday of the user's current week, so day labels feel
@@ -514,8 +642,9 @@ function dateForWeekDay(weekNum, dayIdx) {
   return start;
 }
 
+// European D.M. format: 10.6. for June 10.
 function fmtDate(d) {
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  return `${d.getDate()}.${d.getMonth() + 1}.`;
 }
 
 // ── Right-panel: empty state ────────────────────────────────────────────────
@@ -539,10 +668,10 @@ function EmptyPlanState() {
 function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
-  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const totalKm = weeks.reduce((s, w) => s + w.totalKm, 0);
+  const peak = pickPeakWeek(weeks);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
-  const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
   const tssNote = "TSS measures the stress of a week's training. Higher means harder.";
 
   return (
@@ -555,28 +684,26 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
       >?</button>
 
       <div className="plan-meta">
-        <div>
+        <div className="plan-meta-cell">
           <span className="label">Plan</span>
           <span className="big">{meta.weeksUntilEvent} weeks</span>
         </div>
-        <div>
+        <div className="plan-meta-cell">
           <span className="label">Focus</span>
           <span className="val">{focus}</span>
         </div>
-        <div>
+        <div className="plan-meta-cell">
           <Tooltip content={TIP.totalVolume} side="bottom"><span className="label tip-trigger">Total volume</span></Tooltip>
           <span className="val">{Math.round(totalHours)} hrs</span>
         </div>
-        <div>
+        <div className="plan-meta-cell">
+          <Tooltip content={TIP.totalDistance} side="bottom"><span className="label tip-trigger">Total distance</span></Tooltip>
+          <span className="val">{Math.round(totalKm).toLocaleString()} km</span>
+        </div>
+        <div className="plan-meta-cell">
           <Tooltip content={TIP.peakWeek} side="bottom"><span className="label tip-trigger">Peak week</span></Tooltip>
           <span className="val">Wk {peak.number} · {peak.totalHours} hrs</span>
         </div>
-        {tierLabel && (
-          <div>
-            <Tooltip content={TIP.climbing} side="bottom"><span className="label tip-trigger">Climbing</span></Tooltip>
-            <span className="val">{tierLabel} · {meta.climbingDensity} m/km</span>
-          </div>
-        )}
       </div>
 
       <div className="phase-strip">
@@ -653,6 +780,44 @@ function WeekTabs({ weeks, selected, onSelect }) {
   );
 }
 
+// ── Day card helpers ────────────────────────────────────────────────────────
+
+const WORKOUT_SUBTITLE = {
+  recovery:  "Spin, very light",
+  endurance: "Easy, conversational pace",
+  long:      "Long, steady endurance",
+  tempo:     "Steady, comfortably hard",
+  sweetSpot: "Just below threshold",
+  threshold: "Hard, sustained effort",
+  vo2max:    "Short, very hard intervals",
+  openers:   "Easy, conversational pace",
+};
+
+// Dot count + label keyed by workout type.
+// Long rides are "Moderate" due to total duration stress, not intensity.
+const WORKOUT_DIFFICULTY = {
+  recovery:  { dots: 1, label: "Recovery" },
+  endurance: { dots: 2, label: "Easy" },
+  long:      { dots: 3, label: "Moderate" },
+  tempo:     { dots: 3, label: "Moderate" },
+  sweetSpot: { dots: 3, label: "Moderate" },
+  threshold: { dots: 4, label: "Hard" },
+  vo2max:    { dots: 5, label: "Very hard" },
+  openers:   { dots: 2, label: "Easy" },
+};
+
+function DifficultyDots({ type }) {
+  const { dots, label } = WORKOUT_DIFFICULTY[type] || { dots: 2, label: "Easy" };
+  return (
+    <span className="day-difficulty">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <span key={n} className={"dot" + (n <= dots ? " dot-on" : "")} aria-hidden="true" />
+      ))}
+      <span className="difficulty-label">{label}</span>
+    </span>
+  );
+}
+
 // ── Right-panel: selected week's day cards ──────────────────────────────────
 
 function WeekDays({ week, selectedDay, onSelectDay }) {
@@ -662,65 +827,134 @@ function WeekDays({ week, selectedDay, onSelectDay }) {
       <div className="card-title">
         <h2>Week {week.number}</h2>
         <span className="sub">
-          {week.phase}{week.isRecoveryWeek ? " · Recovery" : ""} · {week.totalHours} hrs · TSS {week.totalTSS}
+          {week.phase}{week.isRecoveryWeek ? " · Recovery" : ""} · {week.totalHours} hours · {Math.round(week.totalKm)} km · TSS {week.totalTSS}
         </span>
       </div>
 
-      <div className="week-grid">
+      <div
+        className="week-grid"
+        style={{ "--week-cols": week.days.map(d => d.workout ? "1.3fr" : "1fr").join(" ") }}
+      >
         {week.days.map((d, i) => {
           const date = dateForWeekDay(week.number, i);
           const dateLabel = fmtDate(date);
 
           if (!d.workout) {
             return (
-              <div key={i} className="day-card day-rest">
+              <div
+                key={i}
+                className={"day-card day-rest" + (i === selectedDay ? " selected" : "")}
+                onClick={() => onSelectDay(i)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onSelectDay(i); }}
+              >
                 <div className="day-head">
                   <span className="day-dow">{d.day}</span>
                   <span className="day-date">{dateLabel}</span>
                 </div>
-                <div className="day-type">Rest</div>
+                <div className="day-rest-body">
+                  <div className="day-type">Rest</div>
+                  <div className="day-subtitle">Off the bike, recover</div>
+                </div>
               </div>
             );
           }
 
           const w = d.workout;
-          // Aggregate minutes per zone for the strip.
-          const zoneMins = {};
-          for (const iv of w.intervals) {
-            zoneMins[iv.zone] = (zoneMins[iv.zone] || 0) + iv.durationMin;
-          }
-          const segs = Object.keys(zoneMins);
-
           return (
             <div
               key={i}
               className={"day-card" + (i === selectedDay ? " selected" : "")}
               onClick={() => onSelectDay(i)}
             >
+              {/* 1. Header */}
               <div className="day-head">
                 <span className="day-dow">{d.day}</span>
                 <span className="day-date">{dateLabel}</span>
               </div>
+
+              {/* 2. Name + subtitle */}
               <div className="day-type">{w.name}</div>
-              {w.hasClimbingFocus && (
-                <div className="climbing-tag">↑ {w.targetElevation} m target</div>
-              )}
-              <div className="day-metric">{w.distanceKm} km · TSS {w.tss}</div>
-              <div className="zone-strip">
-                {segs.map((zone) => (
-                  <div
-                    key={zone}
-                    className="zone-seg"
-                    style={{
-                      flex: zoneMins[zone],
-                      "--z-color": zoneColor(zone),
-                    }}
-                  />
-                ))}
+              <div className="day-subtitle">{WORKOUT_SUBTITLE[w.type] || ""}</div>
+
+              {/* 3. Vertical stat rows: TIME / DISTANCE / CLIMBING */}
+              <div className="day-stats">
+                <div className="day-stat-row">
+                  <span className="day-stat-label">TIME</span>
+                  <span className="day-stat-val">{fmtDurationCard(w.durationMin)}</span>
+                </div>
+                <div className="day-stat-row">
+                  <span className="day-stat-label">DISTANCE</span>
+                  <span className="day-stat-val">{w.distanceKm} km</span>
+                </div>
+                <div className="day-stat-row">
+                  <span className="day-stat-label">CLIMBING</span>
+                  <span className="day-stat-val">
+                    {w.hasClimbingFocus ? `↑ ${w.targetElevation} m` : "—"}
+                  </span>
+                </div>
               </div>
+
+              {/* 4. Difficulty dots on its own row */}
+              <div className="day-difficulty-row">
+                <DifficultyDots type={w.type} />
+              </div>
+
+              {/* 5. TSS on its own row */}
+              <div className="day-tss-row">TSS {w.tss}</div>
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// Recovery content sources (code review reference only, not user-facing):
+// - St. Pierre, P. et al. (2018). Active vs passive recovery and
+//   subsequent exercise performance. J. Strength Cond. Res.
+// - Mero, A. et al. (2015). Effects of post-exercise sauna bathing on
+//   recovery of athletes. Springer Plus.
+// - Laukkanen, J.A. et al. Sauna bathing is associated with reduced
+//   cardiovascular mortality. JAMA Intern. Med. (2015).
+// - Areta, J.L. et al. (2013). Timing and distribution of protein
+//   ingestion during prolonged recovery from resistance exercise.
+//   J. Physiol.
+function RestDayDetail() {
+  return (
+    <div className="card workout-detail">
+      <div className="rest-detail">
+        <h3>Rest day</h3>
+        <p className="rest-detail-sub">Why this matters</p>
+        <p className="rest-detail-body">
+          Rest days are when your body adapts to training. Adaptation happens
+          during recovery, not during the workout itself. Skipping recovery does
+          not make you faster, it accumulates fatigue and increases injury risk.
+        </p>
+
+        <h4>What to focus on</h4>
+        <ul className="rest-detail-list">
+          <li><strong>Sleep 7 to 9 hours.</strong> The single most important recovery factor.</li>
+          <li>Keep drinking water and electrolytes through the day.</li>
+          <li>Move gently. Light activity beats complete stillness for circulation and muscle repair.</li>
+          <li>Stretch or use a foam roller for 10 to 15 minutes if you feel stiff.</li>
+        </ul>
+
+        <h4>Recommended activities</h4>
+        <ul className="rest-detail-list">
+          <li>A walk of 30 to 60 minutes at a comfortable pace</li>
+          <li>Easy swimming or light yoga</li>
+          <li>Foam rolling, mobility work, gentle stretching</li>
+          <li>A 15 to 20 minute sauna session can support circulation and reduce perceived soreness</li>
+        </ul>
+
+        <h4>Avoid</h4>
+        <ul className="rest-detail-list">
+          <li>High-intensity workouts of any kind</li>
+          <li>Long or hard rides</li>
+          <li>Sitting completely still all day, which slows circulation</li>
+        </ul>
       </div>
     </div>
   );
@@ -747,11 +981,10 @@ function WorkoutDetail({ week, dayIndex, fitnessMode }) {
   }, [workout]);
 
   if (!workout) {
+    if (day) return <RestDayDetail />;
     return (
       <div className="card workout-detail">
-        <div className="rest-placeholder">
-          {day ? `${day.day} — rest day, no workout scheduled` : "Select a day to see its workout"}
-        </div>
+        <div className="rest-placeholder">Select a day to see its workout</div>
       </div>
     );
   }
@@ -848,7 +1081,16 @@ function zoneDetail(zoneId, fitnessMode) {
     : (ZONES_LABEL_FTP[zoneId] || "");
 }
 
-// ── Nutrition tips data ──────────────────────────────────────────────────────
+// ── Nutrition tips data ─────────────────────────────────────────────────────
+//
+// Recovery nutrition sources (code review reference only, not user-facing):
+// - Thomas, D.T. et al. (2016). Position of the Academy of Nutrition and
+//   Dietetics: Nutrition and Athletic Performance. J. Acad. Nutr. Diet.
+// - Ivy, J.L. & Portman, R. (2004). Nutrient Timing. Basic Health Pub.
+// - Areta, J.L. et al. (2013). Timing and distribution of protein ingestion.
+//   J. Physiol.
+// - Halson, S.L. (2014). Sleep in elite athletes and nutritional interventions
+//   to enhance sleep. Sports Med.
 
 const _prepBaseTips = [
   "Carbohydrates are your main fuel on training days. Aim for 5-7 g per kg body weight.",
@@ -893,6 +1135,14 @@ const NUTRITION_TIPS_DATA = {
     "Don't undereat. Training raises your calorie needs.",
     "Recovery happens when you rest. Sleep is part of fueling.",
     "Whole foods first. Supplements only fill specific gaps.",
+  ],
+  "Rest Day": [
+    "Protein intake stays consistent. Aim for 1.4 to 1.7 g per kg body weight, spread across meals.",
+    "Slightly reduce overall carbohydrate intake compared to training days, but do not cut carbs entirely. Around 3 to 5 g per kg body weight works for most riders.",
+    "Hydration stays critical. Drink consistently through the day.",
+    "Prioritise whole foods: lean protein, vegetables, fruit, whole grains, healthy fats.",
+    "Limit alcohol. It impairs sleep quality and protein synthesis, both of which matter on recovery days.",
+    "A small protein-rich snack before bed can support overnight muscle repair (20 to 30 g casein or similar slow protein).",
   ],
 };
 
@@ -959,7 +1209,9 @@ function GlossaryModal({ onClose }) {
     };
   }, [onClose]);
 
-  return (
+  // Portal onto document.body so position:fixed is never trapped by an
+  // ancestor transform or animation stacking context (e.g. .fade-in).
+  return ReactDOM.createPortal(
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -985,19 +1237,23 @@ function GlossaryModal({ onClose }) {
           ))}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 // ── Nutrition tips card ──────────────────────────────────────────────────────
 
-function NutritionTips({ plan, currentWeekPhase }) {
+function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
   const phaseTabs = plan.phases.map((p) => p.name);
   const allTabs = [...phaseTabs, "Race Day", "General"];
   const defaultTab = phaseTabs.includes(currentWeekPhase) ? currentWeekPhase : phaseTabs[0];
   const [activeTab, setActiveTab] = useState(defaultTab);
 
-  const tips = NUTRITION_TIPS_DATA[activeTab] || NUTRITION_TIPS_DATA["General"];
+  // When a rest day is selected show rest-day nutrition; when switching
+  // back to a training day the user-chosen phase tab takes over again.
+  const displayTab = isRestDay ? "Rest Day" : activeTab;
+  const tips = NUTRITION_TIPS_DATA[displayTab] || NUTRITION_TIPS_DATA["General"];
 
   return (
     <div className="card">
@@ -1005,17 +1261,21 @@ function NutritionTips({ plan, currentWeekPhase }) {
         <h2>Nutrition tips</h2>
         <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
       </div>
-      <div className="nutr-tabs">
-        {allTabs.map((tab) => (
-          <button
-            key={tab}
-            className={"nutr-tab" + (tab === activeTab ? " active" : "")}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
+      {isRestDay ? (
+        <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
+      ) : (
+        <div className="nutr-tabs">
+          {allTabs.map((tab) => (
+            <button
+              key={tab}
+              className={"nutr-tab" + (tab === activeTab ? " active" : "")}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      )}
       <ul className="nutr-tips">
         {tips.map((tip, i) => (
           <li key={i}>{tip}</li>
@@ -1061,7 +1321,8 @@ function PrintView({ plan, planInputs }) {
   const eventLabel = EVENT_LABEL[meta.eventType] || meta.eventType;
   const tierLabel = { rolling: "Rolling", hilly: "Hilly", mountainous: "Mountainous" }[meta.climbingTier];
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
-  const peak = weeks.reduce((b, w) => (!b || w.totalTSS > b.totalTSS ? w : b), null);
+  const totalKm = weeks.reduce((s, w) => s + w.totalKm, 0);
+  const peak = pickPeakWeek(weeks);
   const generatedStr = formatPrintDate(new Date().toISOString().split("T")[0]);
   const phaseLine = phases
     .map((p) => p.startWeek === p.endWeek
@@ -1116,6 +1377,7 @@ function PrintView({ plan, planInputs }) {
         <dl className="print-kv">
           <dt>Total weeks</dt><dd>{meta.weeksUntilEvent}</dd>
           <dt>Total volume</dt><dd>{Math.round(totalHours)} hrs</dd>
+          <dt>Total distance</dt><dd>{Math.round(totalKm).toLocaleString()} km</dd>
           <dt>Peak week</dt>
           <dd>Wk {peak.number} · {peak.totalHours} hrs · TSS {peak.totalTSS}</dd>
           {tierLabel && (<><dt>Climbing</dt><dd>{tierLabel} · {meta.climbingDensity} m/km</dd></>)}
@@ -1133,7 +1395,7 @@ function PrintView({ plan, planInputs }) {
             <h3>
               Week {w.number} · {w.phase}
               {w.isRecoveryWeek && " · Recovery"}
-              {" · "}{w.totalHours} hrs · TSS {w.totalTSS}
+              {" · "}{w.totalHours} hrs · {Math.round(w.totalKm)} km · TSS {w.totalTSS}
             </h3>
             <table className="print-day-table">
               <tbody>
@@ -1217,10 +1479,9 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     const saved = loadJSON(INPUTS_KEY);
     return saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
   });
-  // Loaded once on mount. Training is conditionally rendered in app.jsx, so
-  // it remounts on every tab switch — that re-reads localStorage and picks up
-  // tours saved while the user was on the Tour Planner tab.
-  const [savedTours] = useState(loadSavedTours);
+  // Live-subscribed to RP_TourStorage so tours saved or deleted from the
+  // Tour Planner tab appear here immediately — no reload needed.
+  const savedTours = useSavedTours();
   const [generatedPlan, setGeneratedPlan] = useState(initialPlan);
   const [generationError, setGenerationError] = useState(null);
   // null | "created" | "updated" — drives the transient post-generate banner.
@@ -1335,6 +1596,12 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
     window.print();
   }
 
+  function handleDownloadIcs() {
+    if (!generatedPlan || !window.RP_IcsExport) return;
+    const filename = `${buildPlanFilename(generatedPlan)}.ics`;
+    window.RP_IcsExport.downloadIcs(generatedPlan, planStartDate(), filename);
+  }
+
   const currentWeek = generatedPlan ? generatedPlan.weeks[selectedWeek - 1] : null;
 
   return (
@@ -1342,6 +1609,7 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
       <div className="stack">
         <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} savedTours={savedTours} />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
+        <InputInfo />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
 
         {confirmationState && (
@@ -1408,13 +1676,23 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
             <NutritionTips
               plan={generatedPlan}
               currentWeekPhase={currentWeek && currentWeek.phase}
+              isRestDay={currentWeek && selectedDay != null && !currentWeek.days[selectedDay]?.workout}
             />
-            <button
-              className="btn btn-ghost download-pdf-btn"
-              onClick={handleDownloadPdf}
-            >
-              <span aria-hidden="true">⬇</span> Download as PDF
-            </button>
+            <div className="plan-actions">
+              <button
+                className="btn btn-ghost download-pdf-btn"
+                onClick={handleDownloadPdf}
+              >
+                <span aria-hidden="true">⬇</span> Download as PDF
+              </button>
+              <button
+                className="btn btn-ghost download-ics-btn"
+                onClick={handleDownloadIcs}
+                title="Import into Apple Calendar, Google Calendar, Outlook, etc."
+              >
+                <span aria-hidden="true">⬇</span> Add to Calendar (.ics)
+              </button>
+            </div>
             <PrintView plan={generatedPlan} planInputs={planInputs} />
           </>
         )}

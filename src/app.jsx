@@ -72,34 +72,34 @@ function App() {
           <button
             role="tab"
             className="tab"
+            data-text="Training"
             aria-selected={tab === "training"}
             onClick={() => setTab("training")}
           >
-            <span className="tab-dot" />
             Training
           </button>
           <button
             role="tab"
             className="tab"
+            data-text="Tour Planner"
             aria-selected={tab === "tour"}
             onClick={() => setTab("tour")}
           >
-            <span className="tab-dot" />
             Tour Planner
           </button>
           <button
             role="tab"
             className="tab"
+            data-text="Weather"
             aria-selected={tab === "weather"}
             onClick={() => setTab("weather")}
           >
-            <span className="tab-dot" />
             Weather
           </button>
         </div>
         <div className="header-meta">
           {tab === "weather"
-            ? <Pill>14-day window</Pill>
+            ? <Pill>16-day window</Pill>
             : <>
                 <Pill>2026 · W19</Pill>
                 {fitnessLabel && (
