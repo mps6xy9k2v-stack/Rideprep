@@ -56,6 +56,7 @@
 }
 
 * { box-sizing: border-box; }
+html { scrollbar-gutter: stable; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); }
 body { min-height: 100vh; font-feature-settings: "ss01","cv11"; }
 button { font-family: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
@@ -79,13 +80,20 @@ a { color: inherit; }
 .header {
   /* 3-column grid: brand | tabs | meta.
      The centre column is auto-sized and centred so neither Brand nor
-     header-meta can push the tabs sideways when their own content changes. */
+     header-meta can push the tabs sideways when their own content changes.
+     A fixed min-height anchors the row track so the tab bar's Y position
+     is independent of which tab's content renders below. */
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
+  min-height: 56px;
 }
-.header .tabs { justify-self: center; }
+.header .tabs {
+  justify-self: center;
+  /* Small downward nudge so the pill breathes a bit from the top of the page. */
+  margin-top: 8px;
+}
 .header .header-meta { justify-self: end; }
 .brand {
   display: flex;
@@ -114,31 +122,16 @@ a { color: inherit; }
   border-radius: 100px;
 }
 .tab {
-  padding: 6px 14px;
+  padding: 6px 16px;
   border-radius: 100px;
   font-size: 13px;
   font-weight: 500;
   color: var(--fg-dim);
   letter-spacing: -0.01em;
   white-space: nowrap;
-  display: flex; align-items: center;
+  display: inline-flex; align-items: center; justify-content: center;
   /* Transition only colour properties — never width-affecting ones. */
   transition: background .18s ease, color .18s ease;
-}
-/* Reserve exactly the width the active (same font-weight) text will occupy.
-   This hidden ::before block prevents any subpixel rendering difference
-   between coloured and transparent backgrounds from shifting tab widths. */
-.tab::before {
-  content: attr(data-text);
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  visibility: hidden;
-  height: 0;
-  overflow: hidden;
-  pointer-events: none;
-  display: block;
 }
 .tab:hover { color: var(--fg); }
 .tab[aria-selected="true"] {
