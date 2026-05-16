@@ -450,9 +450,9 @@ function tourHeadsUpFlags(stops, cache, tour, stageStartCoords) {
   return out.slice(0, 3);
 }
 
-// (Per-stage packing tips now generated via Claude API; the per-stage
-// rule-based fallback lives in localTipsForStage further down. The old
-// tour-aggregate packingTips() helper has been removed.)
+// (Per-stage packing tips now generated via Google Gemini API; the
+// per-stage rule-based fallback lives in localTipsForStage further down.
+// The old tour-aggregate packingTips() helper has been removed.)
 
 // ---------- Small visual pieces ----------
 function WindArrow({ deg = 0, color = "var(--fg)", size = 28 }) {
@@ -1071,8 +1071,8 @@ function TourOutlookCard({ stops, cache, tour, stageStartCoords, activeIdx, onPi
   );
 }
 
-// Per-stage rule-based fallback. Used when no Anthropic API key is
-// configured or when the Claude call fails — keeps the card useful in
+// Per-stage rule-based fallback. Used when no Gemini API key is
+// configured or when the Gemini call fails — keeps the card useful in
 // either case.
 function localTipsForStage(stop, entry, startCoord) {
   if (!stop || !entry) return [];
@@ -1187,7 +1187,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
       setErrorMsg(null);
       return;
     }
-    if (!(window.__PACKING_TIPS_PROXY_URL__ || window.__ANTHROPIC_API_KEY__)) {
+    if (!window.__GEMINI_API_KEY__) {
       // Silent — the local fallback already renders.
       setAiTips(null);
       setErrorMsg(null);
@@ -1216,7 +1216,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
   function regenerate() {
     const RP = window.RP_PackingTips;
     if (!RP || !ctx || !key) return;
-    if (!(window.__PACKING_TIPS_PROXY_URL__ || window.__ANTHROPIC_API_KEY__)) return;
+    if (!window.__GEMINI_API_KEY__) return;
     RP.clearCache(key);
     setLoading(true);
     setErrorMsg(null);
@@ -1234,7 +1234,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
       .finally(() => setLoading(false));
   }
 
-  const apiReady = !!(window.__PACKING_TIPS_PROXY_URL__ || window.__ANTHROPIC_API_KEY__);
+  const apiReady = !!window.__GEMINI_API_KEY__;
   const showSkeleton = loading && !aiTips;
   const tipsToShow = aiTips && aiTips.length ? aiTips : fallbackTips;
   const usingFallback = !aiTips && !loading && tipsToShow.length > 0;
@@ -1248,7 +1248,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
           <button
             type="button"
             className="wx3-tips-regen"
-            title={loading ? "Generating…" : "Regenerate from Claude"}
+            title={loading ? "Generating…" : "Regenerate from Gemini"}
             onClick={regenerate}
             disabled={loading || !ctx}
             aria-label="Regenerate packing tips"
@@ -1275,7 +1275,7 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
       )}
       {usingFallback && errorMsg && (
         <div className="wx3-tips-note" title={errorMsg}>
-          Showing local tips — Claude API unavailable
+          Showing local tips — Gemini API unavailable
         </div>
       )}
     </div>
