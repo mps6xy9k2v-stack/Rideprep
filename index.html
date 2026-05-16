@@ -1631,12 +1631,6 @@ input[type="range"]::-moz-range-thumb {
   font-size: 17px;
 }
 .rest-detail { display: grid; gap: 16px; }
-.rest-detail h3 {
-  margin: 0 0 6px 0;
-  font-size: 26px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-}
 .rest-detail h4 {
   margin: 0;
   font-family: var(--mono);
@@ -1646,7 +1640,13 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.06em;
   color: var(--fg-dim);
 }
-.rest-detail-sub {
+/* Shared header rhythm for sibling panels (Rest day, Nutrition tips):
+   .card-title sits flush (no compounding margin) inside the stack; the
+   italic .panel-sub follows; body items below all share the 16px gap. */
+.panel-stack { display: grid; gap: 16px; }
+.rest-detail > .card-title,
+.panel-stack > .card-title { margin-bottom: 0; }
+.panel-sub {
   margin: 0;
   font-family: var(--serif);
   font-style: italic;
@@ -1952,7 +1952,6 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
 }
 .nutr-tab {
   padding: 6px 12px;

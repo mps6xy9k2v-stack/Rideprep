@@ -925,8 +925,11 @@ function RestDayDetail() {
   return (
     <div className="card workout-detail">
       <div className="rest-detail">
-        <h3>Rest day</h3>
-        <p className="rest-detail-sub">Why this matters</p>
+        <div className="card-title">
+          <h2>Rest day</h2>
+          <span className="sub">Recovery is where adaptation happens.</span>
+        </div>
+        <p className="panel-sub">Why this matters</p>
         <p className="rest-detail-body">
           Rest days are when your body adapts to training. Adaptation happens
           during recovery, not during the workout itself. Skipping recovery does
@@ -1257,30 +1260,33 @@ function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
 
   return (
     <div className="card">
-      <div className="card-title">
-        <h2>Nutrition tips</h2>
-        <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
-      </div>
-      {isRestDay ? (
-        <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
-      ) : (
-        <div className="nutr-tabs">
-          {allTabs.map((tab) => (
-            <button
-              key={tab}
-              className={"nutr-tab" + (tab === activeTab ? " active" : "")}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab}
-            </button>
-          ))}
+      <div className="panel-stack">
+        <div className="card-title">
+          <h2>Nutrition tips</h2>
+          <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
         </div>
-      )}
-      <ul className="nutr-tips">
-        {tips.map((tip, i) => (
-          <li key={i}>{tip}</li>
-        ))}
-      </ul>
+        <p className="panel-sub">Why this also matters on Rest Days</p>
+        {isRestDay ? (
+          <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
+        ) : (
+          <div className="nutr-tabs">
+            {allTabs.map((tab) => (
+              <button
+                key={tab}
+                className={"nutr-tab" + (tab === activeTab ? " active" : "")}
+                onClick={() => setActiveTab(tab)}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        )}
+        <ul className="nutr-tips">
+          {tips.map((tip, i) => (
+            <li key={i}>{tip}</li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
