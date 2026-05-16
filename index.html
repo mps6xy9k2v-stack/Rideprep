@@ -96,23 +96,16 @@ a { color: inherit; }
 }
 .header .header-meta { justify-self: end; }
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 24px;
-  letter-spacing: -0.01em;
+  display: block;
+  width: 130px;
+  height: 38px;
   margin-left: 16px;
+  background: url("logo-dark.png") no-repeat left center;
+  background-size: auto 100%;
 }
-.brand-mark {
-  width: 34px; height: 34px; border-radius: 50%;
-  background: var(--accent);
-  display: grid; place-items: center;
-  color: #ffffff;
-  flex-shrink: 0;
+[data-theme="dawn"] .brand {
+  background-image: url("logo.png");
 }
-.brand-mark svg { width: 26px; height: 26px; }
 
 .tabs {
   display: inline-flex;
@@ -155,7 +148,8 @@ a { color: inherit; }
 }
 @media (max-width: 720px) {
   .header-meta { display: none; }
-  .brand-name { display: none; }
+  /* Collapse to just the bike-in-circle (the leftmost ~32% of the logo). */
+  .brand { width: 38px; }
 }
 
 /* ========== CONTENT AREA ========== */
