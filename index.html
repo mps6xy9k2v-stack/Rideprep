@@ -2021,12 +2021,13 @@ input[type="range"]::-moz-range-thumb {
 
 /* ---------- Route map (Leaflet, adaptive height) ----------
    The React component sets an inline height computed from the route's
-   bounding box and the container width. The 400px default below is only
-   used briefly before measurement runs. */
+   bounding box and the container width. No height in CSS so the inline
+   style is the single source of truth — min-height is just a safety
+   net before measurement runs. */
 .wx3-map {
   position: relative;
   width: 100%;
-  height: 400px;
+  min-height: 320px;
   background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2044,25 +2045,36 @@ input[type="range"]::-moz-range-thumb {
    inner .wx3-mk transform so the popup-style card sits centred on the
    lat/lng. */
 .wx3-pin-wrap { background: none !important; border: none !important; }
-/* --mk-offset is set by JS after fitBounds to bump overlapping markers up. */
+/* --mk-dx / --mk-dy are set by JS after fitBounds to push each card
+   perpendicular to the route, alternating left and right by stage
+   index. The card is centred on the offset point; a connector line
+   (a separate Leaflet polyline) bridges the dot at the true position
+   to this offset card. */
 .wx3-mk {
-  --mk-offset: 0px;
+  --mk-dx: 0px;
+  --mk-dy: 0px;
   position: relative;
-  transform: translate(-50%, calc(-100% + var(--mk-offset)));
+  transform: translate(calc(-50% + var(--mk-dx)), calc(-50% + var(--mk-dy)));
   display: grid; gap: 4px; justify-items: center;
   cursor: pointer;
-  /* 10px padding extends the hit area beyond the visible chip. The
-     transparent padding stays clickable; pointer-events on the wrap is
-     none so empty space doesn't intercept tile drags. */
-  padding: 10px;
-  margin: -10px;
+  /* 12px padding extends the hit area beyond the visible chip so the
+     overall click target is well above the 44px touch-target minimum.
+     The transparent padding stays clickable. */
+  padding: 12px;
+  margin: -12px;
   pointer-events: auto;
   transition: transform .15s ease;
   filter: drop-shadow(0 2px 6px rgba(20, 30, 50, 0.18));
 }
+/* Inner pieces don't intercept clicks — the .wx3-mk wrap owns the hit
+   area so every click lands on the marker regardless of which child
+   was under the cursor. */
+.wx3-mk-name, .wx3-mk-body, .wx3-mk-ic, .wx3-mk-temp {
+  pointer-events: none;
+}
 .wx3-mk:hover,
 .wx3-mk.active {
-  transform: translate(-50%, calc(-100% + var(--mk-offset))) scale(1.05);
+  transform: translate(calc(-50% + var(--mk-dx)), calc(-50% + var(--mk-dy))) scale(1.05);
 }
 .wx3-mk-name {
   font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em;
