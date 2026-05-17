@@ -2019,15 +2019,14 @@ input[type="range"]::-moz-range-thumb {
 .wx3-left { display: grid; gap: 14px; align-content: start; }
 .wx3-right { display: grid; gap: 16px; min-width: 0; }
 
-/* ---------- Route map (Leaflet, adaptive height) ----------
-   The React component sets an inline height computed from the route's
-   bounding box and the container width. No height in CSS so the inline
-   style is the single source of truth — min-height is just a safety
-   net before measurement runs. */
+/* ---------- Route map (Leaflet, fixed aspect ratio) ----------
+   Height tracks width via aspect-ratio so the map looks consistent
+   across viewport sizes. Marker layout (icon on route + alternating
+   info boxes to the side) handles route density, not the container. */
 .wx3-map {
   position: relative;
   width: 100%;
-  min-height: 320px;
+  aspect-ratio: 2.2 / 1;
   background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2041,65 +2040,94 @@ input[type="range"]::-moz-range-thumb {
   padding: 1px 6px !important;
 }
 
-/* Custom divIcon markers — Leaflet's iconAnchor 0,0 centres them via the
-   inner .wx3-mk transform so the popup-style card sits centred on the
-   lat/lng. */
+/* Custom divIcon markers — Leaflet's outer .leaflet-marker-icon wrap
+   is set to the badge size with iconAnchor at its centre, so the icon
+   inside .stage-marker sits exactly on the lat/lng. */
 .wx3-pin-wrap { background: none !important; border: none !important; }
-/* --mk-dx / --mk-dy are set by JS after fitBounds to push each card
-   perpendicular to the route, alternating left and right by stage
-   index. The card is centred on the offset point; a connector line
-   (a separate Leaflet polyline) bridges the dot at the true position
-   to this offset card. */
-.wx3-mk {
-  --mk-dx: 0px;
-  --mk-dy: 0px;
+
+/* The stage marker has two clickable parts inside one divIcon:
+   .stage-icon sits exactly on the route (centred on the lat/lng), and
+   .stage-info-box is positioned absolutely and pushed perpendicular to
+   the route via --ox / --oy CSS vars set by applyAlternatingOffsets.
+   The .stage-marker wrapper itself doesn't intercept clicks — the gap
+   between icon and box stays transparent so it doesn't block the map. */
+.stage-marker {
   position: relative;
-  transform: translate(calc(-50% + var(--mk-dx)), calc(-50% + var(--mk-dy)));
-  display: grid; gap: 4px; justify-items: center;
-  cursor: pointer;
-  /* 12px padding extends the hit area beyond the visible chip so the
-     overall click target is well above the 44px touch-target minimum.
-     The transparent padding stays clickable. */
-  padding: 12px;
-  margin: -12px;
-  pointer-events: auto;
-  transition: transform .15s ease;
-  filter: drop-shadow(0 2px 6px rgba(20, 30, 50, 0.18));
-}
-/* Inner pieces don't intercept clicks — the .wx3-mk wrap owns the hit
-   area so every click lands on the marker regardless of which child
-   was under the cursor. */
-.wx3-mk-name, .wx3-mk-body, .wx3-mk-ic, .wx3-mk-temp {
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
-.wx3-mk:hover,
-.wx3-mk.active {
-  transform: translate(calc(-50% + var(--mk-dx)), calc(-50% + var(--mk-dy))) scale(1.05);
+
+.stage-icon {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1.5px solid #4cc9f0;
+  display: grid; place-items: center;
+  color: #d68a2e;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 2px 6px rgba(20, 30, 50, 0.18);
+  transition: box-shadow .15s ease, transform .15s ease;
 }
-.wx3-mk-name {
-  font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em;
-  text-transform: uppercase; color: #0f1a2a;
-  background: rgba(255, 255, 255, 0.9);
-  padding: 2px 6px; border-radius: 100px;
-  white-space: nowrap;
-  max-width: 140px; overflow: hidden; text-overflow: ellipsis;
-  border: 1px solid rgba(20, 30, 50, 0.08);
+.stage-icon.cool { color: #2a8ec0; }
+.stage-icon:hover {
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 30%, transparent),
+              0 2px 6px rgba(20, 30, 50, 0.18);
 }
-.wx3-mk.active .wx3-mk-name { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.wx3-mk-body {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 8px;
+.stage-marker.active .stage-icon {
+  border-width: 2px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent),
+              0 2px 8px rgba(20, 30, 50, 0.22);
+}
+
+.stage-info-box {
+  --ox: 0px;
+  --oy: 0px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(calc(-50% + var(--ox)), calc(-50% + var(--oy)));
   background: #ffffff;
   border: 1px solid rgba(20, 30, 50, 0.12);
-  border-radius: 100px;
-  font-family: var(--mono); font-size: 11px;
+  border-radius: 10px;
+  padding: 6px 8px;
+  box-shadow: 0 2px 6px rgba(20, 30, 50, 0.18);
+  font-family: var(--mono);
   color: #0f1a2a;
+  white-space: nowrap;
+  display: grid; gap: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform .15s ease, box-shadow .15s ease;
+  z-index: 2;
 }
-.wx3-mk.active .wx3-mk-body { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent); }
-.wx3-mk-ic { color: #d68a2e; display: grid; place-items: center; }
-.wx3-mk-ic.cool { color: #2a8ec0; }
-.wx3-mk-temp { color: #0f1a2a; }
-.wx3-mk.climate { opacity: 0.7; filter: saturate(0.55) drop-shadow(0 1px 3px rgba(20,30,50,0.12)); }
+.stage-info-box:hover {
+  transform: translate(calc(-50% + var(--ox)), calc(-50% + var(--oy))) scale(1.04);
+  box-shadow: 0 4px 10px rgba(20, 30, 50, 0.22);
+}
+.stage-marker.active .stage-info-box {
+  border-color: var(--accent);
+  box-shadow: 0 4px 10px rgba(20, 30, 50, 0.22);
+}
+.stage-city {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stage-temp {
+  font-size: 11px;
+}
+
+.stage-marker.climate {
+  opacity: 0.75;
+  filter: saturate(0.6);
+}
 
 .wx3-pin-mid { background: none !important; border: none !important; }
 .wx3-mid-mk {

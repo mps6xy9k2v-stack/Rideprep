@@ -93,27 +93,6 @@ function routeMetrics(stops) {
   return { routeAspect, minLat, maxLat, minLng, maxLng };
 }
 
-// Adaptive map height. The container's aspect is picked from the route's
-// shape, then we make sure vertical routes have enough room to space the
-// stage markers down the height of the map.
-function computeMapHeight(stages, containerWidth) {
-  const located = (stages || []).filter((s) => s && s.lat != null && s.lng != null);
-  if (located.length < 2 || !containerWidth) return 400;
-  const { routeAspect } = routeMetrics(located);
-  let containerAspect;
-  if (routeAspect >= 2.5)      containerAspect = 2.6;
-  else if (routeAspect >= 1.5) containerAspect = 2.1;
-  else if (routeAspect >= 0.8) containerAspect = 1.4;
-  else if (routeAspect >= 0.4) containerAspect = 0.9;
-  else                         containerAspect = 0.65;
-  let height = containerWidth / containerAspect;
-  // Vertical routes need ~75px per stage so labels don't pile up.
-  if (routeAspect < 1.0) {
-    height = Math.max(height, located.length * 75 + 120);
-  }
-  return Math.max(320, Math.min(800, height));
-}
-
 // Short condition summary used in best/toughest cards in the Tour outlook.
 function conditionShortForCode(code) {
   const { conditionForCode } = window;
@@ -523,27 +502,27 @@ function StagePeriodChips({ daily, hourly }) {
 }
 
 // ---------- Map (Leaflet) ----------
-// After fitBounds we project every stage to container pixels, compute a
-// tangent along the route (from prev → next stage) and lay the marker
-// card 65 px perpendicular to that tangent, alternating left/right by
-// stage index. A small dot stays at the true geo position and a thin
-// polyline connects the two. Container-point math depends on the current
-// view, so this runs once after fitBounds and again on map resize.
-const MARKER_OFFSET_PX = 65;
+// Each stage marker has two visual parts inside one divIcon: a small
+// circular weather badge centred exactly on the stage lat/lng (the
+// "icon"), and a city/temp card placed 55 px perpendicular to the
+// route, alternating left and right by stage index (the "info box").
+// After fitBounds we project each stage to container pixels, compute a
+// tangent from prev → next stage, rotate 90° to get the perpendicular,
+// and push only the info box along it. The icon stays on the route.
+const INFO_OFFSET_PX = 55;
 
-function applyAlternatingOffsets(map, markers, connectors) {
+function applyAlternatingOffsets(map, markers) {
   if (!map || !markers.length) return;
-  const latlngs = markers.map((m) => m.getLatLng());
-  const points = latlngs.map((ll) => {
-    try { return map.latLngToContainerPoint(ll); }
+  const points = markers.map((m) => {
+    try { return map.latLngToContainerPoint(m.getLatLng()); }
     catch { return null; }
   });
 
   markers.forEach((marker, i) => {
     const curr = points[i];
     if (!curr || !marker._icon) return;
-    const inner = marker._icon.querySelector(".wx3-mk");
-    if (!inner) return;
+    const box = marker._icon.querySelector(".stage-info-box");
+    if (!box) return;
 
     const prev = points[Math.max(0, i - 1)] || curr;
     const next = points[Math.min(markers.length - 1, i + 1)] || curr;
@@ -551,59 +530,22 @@ function applyAlternatingOffsets(map, markers, connectors) {
     let ty = next.y - prev.y;
     const len = Math.hypot(tx, ty) || 1;
     tx /= len; ty /= len;
-    // Perpendicular (90° rotation of the tangent).
     const px = -ty;
     const py = tx;
     const dir = (i % 2 === 0) ? 1 : -1;
-    const dx = px * MARKER_OFFSET_PX * dir;
-    const dy = py * MARKER_OFFSET_PX * dir;
+    const ox = px * INFO_OFFSET_PX * dir;
+    const oy = py * INFO_OFFSET_PX * dir;
 
-    inner.style.setProperty("--mk-dx", `${dx}px`);
-    inner.style.setProperty("--mk-dy", `${dy}px`);
-
-    const conn = connectors[i];
-    if (conn) {
-      const offPt = L.point(curr.x + dx, curr.y + dy);
-      const offLL = map.containerPointToLatLng(offPt);
-      conn.setLatLngs([latlngs[i], offLL]);
-    }
+    box.style.setProperty("--ox", `${ox}px`);
+    box.style.setProperty("--oy", `${oy}px`);
   });
 }
 
 function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
-  const wrapRef = useRef(null);
   const elRef = useRef(null);
   const mapRef = useRef(null);
-  const layersRef = useRef({ route: null, markers: [], mids: [], dots: [], connectors: [] });
+  const layersRef = useRef({ route: null, markers: [], mids: [] });
   const [ready, setReady] = useState(false);
-  // Measure the container so we can pick a height proportional to width.
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    setWidth(el.offsetWidth);
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : el.offsetWidth;
-      if (w) setWidth(w);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  const mapHeight = useMemo(() => computeMapHeight(stops, width || 600), [stops, width]);
-  // TODO: remove once the adaptive height is verified on the live site.
-  // Logs once per (stops, width) change, not per render.
-  useEffect(() => {
-    if (!stops || !stops.length) return;
-    const { routeAspect } = routeMetrics(stops);
-    // eslint-disable-next-line no-console
-    console.log("[weather map]", {
-      stages: stops.length,
-      routeAspect: Number(routeAspect.toFixed(2)),
-      width,
-      mapHeight,
-    });
-  }, [stops, width, mapHeight]);
 
   // Init the map once. Locked (no pan / no zoom) — this is a presentation
   // map, not a navigation surface.
@@ -634,15 +576,6 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
     };
   }, []);
 
-  // Map height can change with route shape or window width; tell Leaflet
-  // to re-measure so tile layers don't show grey edges.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !ready) return;
-    const t = setTimeout(() => map.invalidateSize(), 30);
-    return () => clearTimeout(t);
-  }, [mapHeight, ready]);
-
   // Redraw route + markers on every relevant data change.
   useEffect(() => {
     const map = mapRef.current;
@@ -653,10 +586,6 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
     layers.markers = [];
     layers.mids.forEach((m) => map.removeLayer(m));
     layers.mids = [];
-    layers.dots.forEach((m) => map.removeLayer(m));
-    layers.dots = [];
-    layers.connectors.forEach((m) => map.removeLayer(m));
-    layers.connectors = [];
 
     const located = stops.filter((s) => s.lat != null && s.lng != null);
     if (!located.length) return;
@@ -673,9 +602,9 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       }).addTo(map);
     }
 
-    // Stage markers — kept in route order so dots / connectors / markers
-    // arrays stay index-parallel for the alternating-offset pass below.
-    // "Active on top" is handled by zIndexOffset, not by reordering.
+    // Stage markers in route order so the markers array stays
+    // index-parallel for the alternating-offset pass. "Active on top"
+    // is handled by Leaflet's zIndexOffset, not by reordering.
     located.forEach((s) => {
       const stopIdx = stops.indexOf(s);
       const entry = cache[cacheKey(stopIdx, s.date, tour.id)];
@@ -686,51 +615,34 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       const isClimate = s.kind === "climate";
       const cool = code != null && code >= 50;
       const tempLabel = daily
-        ? `${Math.round(daily.temperature_2m_max)}°/${Math.round(daily.temperature_2m_min)}°`
+        ? `${Math.round(daily.temperature_2m_max)}° / ${Math.round(daily.temperature_2m_min)}°`
         : "";
-      const iconHtml = code != null ? iconSvgString(code, 20) : "";
-      const hasBody = code != null || (!isClimate && tempLabel);
+      const iconPx = isActive ? 22 : 18;
+      const iconHtml = code != null ? iconSvgString(code, iconPx) : "";
       const displayName = shortCity(s.to);
+      const showTemp = !isClimate && tempLabel;
+      // Outer divIcon size = the icon badge size; info box is positioned
+      // absolutely and overflows the divIcon's bounding box — Leaflet
+      // doesn't clip divIcon contents.
+      const badgePx = isActive ? 36 : 28;
       const html = `
-        <div class="wx3-mk ${isActive ? "active" : ""} ${isClimate ? "climate" : ""}">
-          <div class="wx3-mk-name" title="${escapeHtml(s.to || "")}">${escapeHtml(displayName)}</div>
-          ${hasBody ? `
-            <div class="wx3-mk-body">
-              ${iconHtml ? `<span class="wx3-mk-ic ${cool ? "cool" : ""}">${iconHtml}</span>` : ""}
-              ${(!isClimate && tempLabel) ? `<span class="wx3-mk-temp">${tempLabel}</span>` : ""}
-            </div>
-          ` : ""}
+        <div class="stage-marker${isActive ? " active" : ""}${isClimate ? " climate" : ""}">
+          <div class="stage-icon${cool ? " cool" : ""}" title="${escapeHtml(s.to || "")}">
+            ${iconHtml}
+          </div>
+          <div class="stage-info-box">
+            <div class="stage-city" title="${escapeHtml(s.to || "")}">${escapeHtml(displayName)}</div>
+            ${showTemp ? `<div class="stage-temp">${tempLabel}</div>` : ""}
+          </div>
         </div>
       `;
       const icon = L.divIcon({
         className: "wx3-pin-wrap",
         html,
-        iconSize: null,
-        iconAnchor: [0, 0],
+        iconSize: [badgePx, badgePx],
+        iconAnchor: [badgePx / 2, badgePx / 2],
       });
-      // z stacking: later stages above earlier ones (so labels read forward),
-      // active always on top.
       const zOff = isActive ? 1000 : stopIdx;
-      // Small filled circle at the true geo position — purely a visual
-      // anchor for the offset card. Not interactive.
-      const dot = L.circleMarker([s.lat, s.lng], {
-        radius: 4,
-        color: "#ffffff",
-        weight: 1.5,
-        fillColor: "#4cc9f0",
-        fillOpacity: 1,
-        interactive: false,
-      }).addTo(map);
-      layers.dots.push(dot);
-      // Connector from dot → offset card. Endpoints are set in
-      // applyAlternatingOffsets after the map view is settled.
-      const conn = L.polyline([[s.lat, s.lng], [s.lat, s.lng]], {
-        color: "#4cc9f0",
-        weight: 1.5,
-        opacity: 0.6,
-        interactive: false,
-      }).addTo(map);
-      layers.connectors.push(conn);
       const m = L.marker([s.lat, s.lng], { icon, riseOnHover: true, zIndexOffset: zOff }).addTo(map);
       m.on("click", () => onPick(stopIdx));
       layers.markers.push(m);
@@ -753,48 +665,34 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       layers.mids.push(m);
     }
 
-    // Fit bounds (including any midpoints) with generous padding so labels
-    // at the edges don't clip.
+    // Fit bounds (including any midpoints) with padding so info boxes
+    // at the edges of the route don't clip against the map border.
     const allPoints = latlngs.slice();
     layers.mids.forEach((m) => { const ll = m.getLatLng(); allPoints.push([ll.lat, ll.lng]); });
     if (allPoints.length === 1) {
       map.setView(allPoints[0], 10);
     } else {
       const bounds = L.latLngBounds(allPoints);
-      // Very vertical routes pinch into a thin column in the centre of a
-      // wide-ish map; pad east-west so the route uses the available width.
-      const { routeAspect } = routeMetrics(stops);
-      if (routeAspect < 0.5) {
-        const east = bounds.getEast(), west = bounds.getWest();
-        const cLat = bounds.getCenter().lat;
-        const expand = Math.max((east - west) * 0.08, 0.04);
-        bounds.extend([cLat, east + expand]);
-        bounds.extend([cLat, west - expand]);
-      }
-      map.fitBounds(bounds, { padding: [80, 80] });
+      map.fitBounds(bounds, { padding: [60, 80] });
     }
-    // After Leaflet has positioned the markers, compute the perpendicular
-    // offsets and connector geometry. requestAnimationFrame waits until
+    // After Leaflet has positioned the markers, push each info box
+    // perpendicular to the route. requestAnimationFrame waits until
     // the DOM has the icons placed.
     const raf = requestAnimationFrame(() => {
-      applyAlternatingOffsets(map, layers.markers, layers.connectors);
+      applyAlternatingOffsets(map, layers.markers);
     });
-    // Re-apply on map resize so the offsets stay correct after height
-    // changes or orientation swaps.
-    const onResize = () => applyAlternatingOffsets(map, layers.markers, layers.connectors);
+    // Re-apply on map resize so offsets stay correct after viewport
+    // changes (e.g. window resize, mobile orientation).
+    const onResize = () => applyAlternatingOffsets(map, layers.markers);
     map.on("resize", onResize);
     return () => {
       cancelAnimationFrame(raf);
       map.off("resize", onResize);
     };
-  }, [stops, cache, activeIdx, tour, ready, mapHeight]);
+  }, [stops, cache, activeIdx, tour, ready]);
 
   return (
-    <div
-      ref={wrapRef}
-      className="wx3-map"
-      style={{ height: mapHeight }}
-    >
+    <div className="wx3-map">
       <div ref={elRef} className="wx3-map-canvas" />
     </div>
   );
