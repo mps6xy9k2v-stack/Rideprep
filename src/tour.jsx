@@ -500,7 +500,7 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
       "></div>`;
       const icon = L.divIcon({ className: "rp-marker", html, iconSize: [20, 20], iconAnchor: [10, 10] });
       const m = L.marker(ll, { icon }).addTo(map);
-      m.bindPopup(`<strong>${s.to}</strong><br/>Stage ${i + 1} · ${s.km} km · ${s.ascent} m ascent`);
+      m.bindPopup(`<strong>${cityShortLabel(s.to)}</strong><br/>Stage ${i + 1} · ${s.km} km · ${s.ascent} m ascent`);
       m.on("click", () => onPickStage && onPickStage(i));
       layersRef.current.markers.push(m);
     });
@@ -515,7 +515,7 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
       "></div>`;
       const icon = L.divIcon({ className: "rp-marker", html, iconSize: [20, 20], iconAnchor: [10, 10] });
       const m = L.marker(start, { icon }).addTo(map);
-      m.bindPopup(`<strong>${tour.from || "Start"}</strong>`);
+      m.bindPopup(`<strong>${cityShortLabel(tour.from) || "Start"}</strong>`);
       layersRef.current.markers.push(m);
     }
   }, [tour, geometry, activeStage, onPickStage]);
@@ -539,7 +539,7 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
       <div ref={elRef} style={{ width: "100%", height: "100%" }} />
       <div className="map-overlay">
         <span className="dot" />
-        <span>{tour.from || "—"} → {tour.to || "—"}</span>
+        <span>{cityShortLabel(tour.from) || "—"} → {cityShortLabel(tour.to) || "—"}</span>
       </div>
       <div className="map-legend">
         <span className="city">Stage end</span>
@@ -595,6 +595,16 @@ const DE_STATE_ABBR = {
   "Saxony-Anhalt": "ST", "Sachsen-Anhalt": "ST",
   "Schleswig-Holstein": "SH",
   "Thuringia": "TH", "Thüringen": "TH",
+};
+
+// English state names keyed by the abbreviation we resolve to.
+const DE_STATE_NAME_EN = {
+  BW: "Baden-Württemberg", BY: "Bavaria", BE: "Berlin",
+  BB: "Brandenburg", HB: "Bremen", HH: "Hamburg",
+  HE: "Hesse", NI: "Lower Saxony", MV: "Mecklenburg-Vorpommern",
+  NW: "North Rhine-Westphalia", RP: "Rhineland-Palatinate",
+  SL: "Saarland", SN: "Saxony", ST: "Saxony-Anhalt",
+  SH: "Schleswig-Holstein", TH: "Thuringia",
 };
 
 // POI / non-place classes Nominatim returns. We never want a tour to
@@ -706,7 +716,7 @@ function _formatSuggestion(r) {
     const postcode = a.postcode ? `${a.postcode} ` : "";
     const town = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || "";
     const head = street ? `${street}${house}` : (r.name || "");
-    const tail = [postcode + town, "Deutschland"].filter(Boolean).join(", ");
+    const tail = [postcode + town, "Germany"].filter(Boolean).join(", ");
     if (head && tail) return `${head}, ${tail}`;
     // Fallback: take the first 4 comma-separated parts of display_name.
     return String(r.display_name || "").split(",").slice(0, 4).map((s) => s.trim()).filter(Boolean).join(", ");
@@ -716,9 +726,10 @@ function _formatSuggestion(r) {
   const name = a.city || a.town || a.village
              || a.municipality || a.hamlet || a.suburb
              || r.name;
-  const rawCode = a.state_code || DE_STATE_ABBR[a.state] || "";
-  const state = rawCode.replace(/^DE-/i, "").substring(0, 4);
-  return state ? `${name}, ${state}, Deutschland` : `${name}, Deutschland`;
+  const rawCode = (a.state_code || DE_STATE_ABBR[a.state] || "")
+    .replace(/^DE-/i, "").substring(0, 4);
+  const stateEn = DE_STATE_NAME_EN[rawCode] || rawCode;
+  return stateEn ? `${name}, ${stateEn}, Germany` : `${name}, Germany`;
 }
 
 const _nomCache = new Map();
@@ -741,7 +752,7 @@ async function nominatimSearch(query) {
     addressdetails: "1",
     limit: "15",
     format: "jsonv2",
-    "accept-language": "de",
+    "accept-language": "en",
   });
   const url = `https://nominatim.openstreetmap.org/search?${params}`;
   _debugAc("debounced query firing:", q);
@@ -930,7 +941,7 @@ function CityAutocomplete({ inputId, label, value, onChange, onSelect, placehold
         <ul id={listId} role="listbox" className="city-ac-list">
           {results.length === 0
             ? <li className="city-ac-empty" role="option" aria-disabled="true">
-                Keine deutsche Stadt gefunden.
+                No German city found.
               </li>
             : results.map((item, i) => (
                 <li
@@ -1248,7 +1259,7 @@ function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, 
                   value={stop}
                   onChange={(v) => setStop(i, v)}
                   onSelect={(item) => setStopFromSuggestion(i, item)}
-                  placeholder="Stadt eingeben …"
+                  placeholder="Enter a city or address …"
                   error={stopErrors[i]}
                   checking={stopChecking[i]}
                 />
@@ -1818,9 +1829,9 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
             <div className="stage-num">{i + 1}</div>
             <div className="stage-body">
               <div className="stage-route">
-                <span>{s.from}</span>
+                <span>{cityShort(s.from)}</span>
                 <span className="arrow">→</span>
-                <span>{s.to}</span>
+                <span>{cityShort(s.to)}</span>
                 {dateLabel && <span className="stage-date">{dateLabel}</span>}
               </div>
               <div className="stage-stats">

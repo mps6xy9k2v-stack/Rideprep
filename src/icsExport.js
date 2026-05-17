@@ -246,7 +246,7 @@ function cityShort(label) {
 
 function tourStageDescription(stage, dayNum) {
   const lines = [];
-  lines.push(`Day ${dayNum}: ${stage.from} → ${stage.to}`);
+  lines.push(`Day ${dayNum}: ${cityShort(stage.from)} → ${cityShort(stage.to)}`);
   const metrics = [];
   if (stage.km != null)      metrics.push(`${stage.km} km`);
   if (stage.ascent != null)  metrics.push(`↑ ${stage.ascent} m`);
@@ -286,7 +286,7 @@ function generateTourIcs(tour, startDateISO) {
   if (!startDateISO) throw new Error("generateTourIcs: startDate required");
   if (!tour || !tour.stages || tour.stages.length === 0) throw new Error("generateTourIcs: tour has no stages");
   return buildVCalendar(tourToEvents(tour, startDateISO), {
-    calName: `RidePrep Tour: ${tour.from || "Tour"} → ${tour.to || ""}`.trim(),
+    calName: `RidePrep Tour: ${cityShort(tour.from) || "Tour"} → ${cityShort(tour.to) || ""}`.trim(),
     prodId: "-//RidePrep//Tour Planner//EN",
   });
 }
