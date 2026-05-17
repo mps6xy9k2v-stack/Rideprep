@@ -152,17 +152,22 @@ async function fetchPackingTips(ctx) {
     throw new Error(`Gemini ${res.status}: ${detail}`);
   }
   const data = await res.json();
-  const text =
+  // gemini-2.5-flash splits longer outputs across multiple parts in
+  // content.parts[]. Concatenate every part's .text so we don't read
+  // only the first 26 characters and lose the rest of the array.
+  const parts =
     (data && data.candidates && data.candidates[0] &&
-     data.candidates[0].content && data.candidates[0].content.parts &&
-     data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text) || "";
+     data.candidates[0].content && data.candidates[0].content.parts) || [];
+  const text = parts.map((p) => (p && p.text) || "").join("");
 
   // eslint-disable-next-line no-console
-  console.log("[packingTips] raw response text:", text);
+  console.log("[packingTips] full data.candidates[0]:", JSON.stringify(data && data.candidates && data.candidates[0]));
   // eslint-disable-next-line no-console
-  console.log("[packingTips] raw response type:", typeof text);
+  console.log("[packingTips] full response parts count:", parts.length);
   // eslint-disable-next-line no-console
-  console.log("[packingTips] raw response length:", text && text.length);
+  console.log("[packingTips] raw response text FULL:", text);
+  // eslint-disable-next-line no-console
+  console.log("[packingTips] raw response length:", text.length);
 
   const tips = parseGeminiResponse(text);
   if (!tips.length) throw new Error("Response was not a JSON array of strings");
