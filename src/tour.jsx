@@ -630,6 +630,45 @@ function _isCityLike(r) {
   return false;
 }
 
+// Ranking helpers used by nominatimSearch to choose the *best* OSM
+// record per unique label. For a small town like Bad Laer, Nominatim
+// often returns both a `place/village` node (the populated-place
+// centre) and a `boundary/administrative` relation (the admin-boundary
+// centroid, which can sit anywhere inside the polygon — including
+// outside the village itself). Picking the wrong one is what makes the
+// destination dot land in the wrong field.
+const _PLACE_TYPE_RANK = {
+  city: 0, town: 1, village: 2, municipality: 3, hamlet: 4,
+  suburb: 5, borough: 6, quarter: 7,
+};
+function _placeRank(item) {
+  if (item.class === "place" && _PLACE_TYPE_RANK[item.type] != null) {
+    return _PLACE_TYPE_RANK[item.type];
+  }
+  if (item.class === "boundary" && item.type === "administrative") return 10;
+  return 20;
+}
+// Prefer node > way > relation. Nodes/ways are tagged on the populated
+// place itself; relations are admin boundaries whose centroid can be
+// far from the actual settlement centre.
+function _osmRank(item) {
+  if (item.osm_type === "node" || item.osm_type === "N") return 0;
+  if (item.osm_type === "way" || item.osm_type === "W") return 1;
+  if (item.osm_type === "relation" || item.osm_type === "R") return 2;
+  return 3;
+}
+function _scoreCandidate(item) {
+  // Composite key: lower is better. Place type wins first, then OSM
+  // type, then -importance (so higher importance breaks ties).
+  return [_placeRank(item), _osmRank(item), -(Number(item.importance) || 0)];
+}
+function _cmpScore(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
 function _debugAc(...args) {
   if (typeof window !== "undefined" && window.RP_DEBUG_AUTOCOMPLETE) {
     try { console.log("[autocomplete]", ...args); } catch {}
@@ -684,8 +723,13 @@ async function nominatimSearch(query) {
   if (Array.isArray(data) && data.length > 0) {
     _debugAc("sample result[0]:", data[0]);
   }
-  const seen = new Set();
-  const items = [];
+  // Group every city-like result by display label, keeping only the
+  // best-ranked underlying OSM record per label. This is where the
+  // Bad-Laer-style "dot in the wrong field" bug gets fixed: a
+  // place/village node (settlement centre) beats a boundary/admin
+  // relation (boundary centroid) even when Nominatim returned the
+  // relation first.
+  const bestByLabel = new Map();
   let rejectedSample = null;
   let acceptedSample = null;
   for (const item of data) {
@@ -705,23 +749,33 @@ async function nominatimSearch(query) {
       };
     }
     const label = _formatSuggestion(item);
-    if (seen.has(label)) continue;
-    seen.add(label);
+    const prev = bestByLabel.get(label);
+    if (!prev || _cmpScore(_scoreCandidate(item), _scoreCandidate(prev)) < 0) {
+      bestByLabel.set(label, item);
+    }
+  }
+  // Order the surviving candidates by the same composite score so the
+  // dropdown shows the most likely "what the user meant" first.
+  const ordered = [...bestByLabel.values()].sort(
+    (a, b) => _cmpScore(_scoreCandidate(a), _scoreCandidate(b))
+  );
+  const items = ordered.slice(0, 8).map((item) => {
     const lat = Number(item.lat);
     const lng = Number(item.lon);
-    items.push({
-      label,
+    return {
+      label: _formatSuggestion(item),
       lat: Number.isFinite(lat) ? lat : null,
       lng: Number.isFinite(lng) ? lng : null,
       importance: Number(item.importance) || 0,
       class: item.class,
       type: item.type,
-    });
-    if (items.length >= 8) break;
-  }
+      osm_type: item.osm_type,
+    };
+  });
   _debugAc("after filter, results count:", items.length);
   _debugAc("filter rejected sample:", rejectedSample);
   _debugAc("filter accepted sample:", acceptedSample);
+  _debugAc("top candidate:", items[0]);
   _nomCache.set(cacheKey, items);
   return items;
 }
@@ -772,6 +826,12 @@ function CityAutocomplete({ inputId, label, value, onChange, onSelect, placehold
   }
 
   function pick(item) {
+    // eslint-disable-next-line no-console
+    console.log("[autocomplete] picked", item.label, {
+      lat: item.lat, lng: item.lng,
+      class: item.class, type: item.type,
+      osm_type: item.osm_type, importance: item.importance,
+    });
     setLocalVal(item.label);
     if (onSelect) onSelect(item);
     else onChange(item.label);
