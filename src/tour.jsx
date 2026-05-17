@@ -79,12 +79,12 @@ function buildTourName(from, to, startDate) {
 // derived ID and display name (which the storage layer doesn't know
 // how to compute). Returns the same { ok, reason?, id } envelope so
 // callers can surface quota errors.
-function saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate }) {
+function saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, avoidShortFinal }) {
   if (!_TS()) return { ok: false, reason: "no-storage" };
   if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
   const id = tourIdFor(tour.from, tour.to, startDate);
   const name = buildTourName(tour.from, tour.to, startDate);
-  return _TS().saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, id, name });
+  return _TS().saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, avoidShortFinal, id, name });
 }
 
 function deleteTour(id) {
@@ -300,18 +300,51 @@ function distMeters(a, b) {
 // Ascent/descent are NOT computed inline — that happens in the second pass
 // below via the shared RP_Elevation pipeline so the card, the modal, and
 // the summary bar all see the same numbers.
-async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
+//
+// opts.avoidShortFinal: when true, drop the last sub-dailyKm stage and
+// redistribute its distance evenly across the remaining stages, as long
+// as no resulting stage exceeds dailyKm + SHORT_STAGE_MAX_OVERSHOOT_KM.
+const SHORT_STAGE_THRESHOLD_KM = 30;
+const SHORT_STAGE_MAX_OVERSHOOT_KM = 20;
+async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key, opts) {
+  const avoidShortFinal = !!(opts && opts.avoidShortFinal);
   const dailyM = dailyKm * 1000;
+  // Pre-compute each segment length so we can both pick the stage count
+  // and walk the splits without measuring twice.
+  const segDists = new Array(Math.max(0, coords.length - 1));
+  let totalDist = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const seg = distMeters(coords[i - 1], coords[i]);
+    segDists[i - 1] = seg;
+    totalDist += seg;
+  }
+
+  // Default behaviour: ceil(total / daily) stages — a possibly-short
+  // final stage carries the remainder.
+  let numStages = Math.max(1, Math.ceil(totalDist / dailyM));
+  let mergeApplied = false;
+  if (avoidShortFinal && numStages > 1) {
+    const tentative = Math.floor(totalDist / dailyM);
+    const lastStageM = totalDist - tentative * dailyM;
+    if (tentative >= 1 && lastStageM < SHORT_STAGE_THRESHOLD_KM * 1000) {
+      const newPerStageM = totalDist / tentative;
+      const overshootM = newPerStageM - dailyM;
+      if (overshootM <= SHORT_STAGE_MAX_OVERSHOOT_KM * 1000) {
+        numStages = tentative;
+        mergeApplied = true;
+      }
+    }
+  }
+  const effectiveDailyM = totalDist / numStages;
+
   const stages = [];
   let stageStart = 0;
   let stageCum = 0;
-  let totalDist = 0;
-
   for (let i = 1; i < coords.length; i++) {
-    const seg = distMeters(coords[i - 1], coords[i]);
-    stageCum += seg;
-    totalDist += seg;
-    if (stageCum >= dailyM && i < coords.length - 1) {
+    stageCum += segDists[i - 1];
+    // Commit a stage only if we still have intermediates to make and
+    // we're not at the very last coord (which the final stage owns).
+    if (stages.length < numStages - 1 && stageCum >= effectiveDailyM && i < coords.length - 1) {
       stages.push({ startIdx: stageStart, endIdx: i, km: stageCum / 1000 });
       stageStart = i;
       stageCum = 0;
@@ -354,13 +387,13 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
     return stage;
   });
 
-  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent };
+  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent, mergeApplied };
 }
 
 // Split a multi-waypoint route into daily stages, leg by leg.
 // `wayPointIdx` is the array of coord indices that ORS returns under
 // `properties.way_points` — one entry per requested waypoint.
-async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key) {
+async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key, opts) {
   const allStages = [];
   let totalKm = 0;
   let totalAscent = 0;
@@ -372,7 +405,7 @@ async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key) {
     if (segCoords.length < 2) continue;
 
     const split = await splitIntoStages(
-      segCoords, dailyKm, stopLabels[leg], stopLabels[leg + 1], key
+      segCoords, dailyKm, stopLabels[leg], stopLabels[leg + 1], key, opts
     );
 
     // Re-base stage indices to be relative to the full coords array.
@@ -1230,7 +1263,7 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearA
   );
 }
 
-function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
+function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, avoidShortFinal, setAvoidShortFinal, hasPlannedTour, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
   const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops, stopCoords);
   const planDisabled = loading || anyInvalid || anyChecking;
@@ -1332,6 +1365,26 @@ function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, 
           onChange={(e) => setDailyKm(+e.target.value)}
         />
       </div>
+
+      <label
+        className="balance-toggle"
+        title={hasPlannedTour ? "" : "Plan a route first to enable this option"}
+        style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "8px 4px 0", fontSize: 12, color: "var(--fg-dim)",
+          opacity: hasPlannedTour ? 1 : 0.55,
+          cursor: hasPlannedTour ? "pointer" : "not-allowed",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={!!avoidShortFinal}
+          disabled={!hasPlannedTour}
+          onChange={(e) => setAvoidShortFinal(e.target.checked)}
+          style={{ width: 16, height: 16, cursor: "inherit" }}
+        />
+        <span>Balance stages — merge short final day into previous stages</span>
+      </label>
 
       <div className="btn-row">
         <button
@@ -1952,6 +2005,38 @@ function Tour({ tweaks }) {
   const [activeStage, setActiveStage] = useState(0);
   const [destView, setDestView] = useState(null);   // { cityLabel, lat, lng } | null
   const [dayView, setDayView] = useState(null);     // { stageIdx } | null
+  // "Avoid short final stage" preference, persisted across sessions.
+  // When a tour is loaded from storage, its own saved flag overrides the
+  // global preference so reopening a tour shows exactly what was last
+  // computed for it.
+  const [avoidShortFinal, setAvoidShortFinalState] = useState(() => {
+    if (saved && typeof saved.avoidShortFinal === "boolean") return saved.avoidShortFinal;
+    try {
+      const raw = localStorage.getItem("rideprep:avoidShortFinalStage");
+      return raw ? JSON.parse(raw) === true : false;
+    } catch { return false; }
+  });
+  const setAvoidShortFinal = useCallback((v) => {
+    setAvoidShortFinalState(!!v);
+    try { localStorage.setItem("rideprep:avoidShortFinalStage", JSON.stringify(!!v)); } catch {}
+  }, []);
+  // Auto re-plan when the user flips the toggle on an already-planned
+  // route. Skip the first render (when the value is just being loaded
+  // from saved state / localStorage and the tour hasn't been planned
+  // in this session yet).
+  const prevAvoidRef = useRef(avoidShortFinal);
+  useEffect(() => {
+    if (prevAvoidRef.current === avoidShortFinal) return;
+    prevAvoidRef.current = avoidShortFinal;
+    if (!window.__ORS_API_KEY__) return;
+    if (!tour || !Array.isArray(tour.stages) || tour.stages.length === 0) return;
+    if (loading) return;
+    planRoute();
+    // planRoute is intentionally omitted from deps — including it would
+    // re-fire on every state change (it changes identity with stops
+    // etc.). We only want this effect to react to the toggle flip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avoidShortFinal]);
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
@@ -2066,6 +2151,7 @@ function Tour({ tweaks }) {
         setStopCoords(coords);
       }
       if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
+      if (typeof blob.avoidShortFinal === "boolean") setAvoidShortFinalState(blob.avoidShortFinal);
       setStartDate(blob.startDate || null);
       setTour(blob.tour);
       setGeometry(blob.geometry || []);
@@ -2162,7 +2248,7 @@ function Tour({ tweaks }) {
         wayPointIdx = [0, coords.length - 1];
       }
 
-      const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
+      const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key, { avoidShortFinal });
       // For the final stage, prefer the user's intended destination
       // coord (the place-node lat/lng from Nominatim) over ORS's snapped
       // polyline endpoint. ORS sometimes ends the route at a peripheral
@@ -2208,6 +2294,7 @@ function Tour({ tweaks }) {
         stopCoords: pairs.map((p) => p.coord),
         dailyKm,
         startDate,
+        avoidShortFinal,
       });
       if (saveResult && saveResult.reason === "quota") {
         setStorageBanner("Storage limit reached. Delete some saved tours to make room.");
@@ -2218,7 +2305,7 @@ function Tour({ tweaks }) {
     } finally {
       setLoading(false);
     }
-  }, [stops, dailyKm, startDate, initialDemo]);
+  }, [stops, stopCoords, dailyKm, startDate, avoidShortFinal, initialDemo]);
 
   return (
     <div className="fade-in">
@@ -2252,6 +2339,10 @@ function Tour({ tweaks }) {
             addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
+            avoidShortFinal={avoidShortFinal} setAvoidShortFinal={setAvoidShortFinal}
+            hasPlannedTour={!!(tour && Array.isArray(tour.stages) && tour.stages.length > 0
+                              && Array.isArray(geometry) && geometry.length > 1
+                              && !!window.__ORS_API_KEY__)}
             onPlan={planRoute}
             loading={loading}
             error={error}
