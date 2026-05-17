@@ -333,9 +333,12 @@ a { color: inherit; }
   gap: 8px;
   /* Slightly taller than before; combined with the 90 % bar-height
      cap in PlanHero this guarantees the tallest bar has breathing
-     room above and is never visually clipped against the top edge. */
+     room above and is never visually clipped against the top edge.
+     Horizontal padding keeps the first and last bars from sitting
+     flush against the wrap's edges (and against the scrollbar gutter
+     when the strip overflows). */
   height: 100px;
-  padding-top: 8px;
+  padding: 8px 8px 0;
   align-items: end;
 }
 .vol-bar {
