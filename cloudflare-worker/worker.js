@@ -34,7 +34,7 @@
 //   - The Origin header must match an entry in ALLOWED_ORIGINS.
 //   - maxOutputTokens is capped at 1000 server-side regardless of what
 //     the client asked for.
-//   - Model is hardcoded to gemini-1.5-flash — clients cannot upgrade
+//   - Model is hardcoded to gemini-2.0-flash-exp — clients cannot upgrade
 //     to a paid model via this proxy.
 //   - The body must be valid JSON with a `contents` field.
 
@@ -45,14 +45,14 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:8080",
 ];
 
-const MODEL = "gemini-1.5-flash";
+const MODEL = "gemini-2.0-flash-exp";
 const UPSTREAM = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 function corsHeaders(origin) {
   const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : "null";
   return {
     "Access-Control-Allow-Origin": allowed,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin",
@@ -74,13 +74,6 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", {
-        status: 405,
-        headers: corsHeaders(origin),
-      });
-    }
-
     if (!ALLOWED_ORIGINS.includes(origin)) {
       return jsonResponse(403, { error: "Forbidden origin", origin }, origin);
     }
@@ -89,6 +82,30 @@ export default {
       return jsonResponse(500, {
         error: "Server not configured: GEMINI_API_KEY secret is missing",
       }, origin);
+    }
+
+    // GET = diagnostic "list available models for this key" probe.
+    // Lets the browser introspect what model names are actually usable
+    // through this proxy without ever exposing the API key.
+    if (request.method === "GET") {
+      const listRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(env.GEMINI_API_KEY)}`
+      );
+      const text = await listRes.text();
+      return new Response(text, {
+        status: listRes.status,
+        headers: {
+          ...corsHeaders(origin),
+          "Content-Type": listRes.headers.get("Content-Type") || "application/json",
+        },
+      });
+    }
+
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", {
+        status: 405,
+        headers: corsHeaders(origin),
+      });
     }
 
     let parsed;

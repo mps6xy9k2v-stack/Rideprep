@@ -1,5 +1,5 @@
 /* global window */
-// AI-generated packing tips via the Google Gemini API (gemini-1.5-flash).
+// AI-generated packing tips via the Google Gemini API (gemini-2.0-flash-exp).
 //
 // SECURITY NOTE: This calls generativelanguage.googleapis.com directly
 // from the browser using window.__GEMINI_API_KEY__. Anyone who can open
@@ -18,7 +18,7 @@
 (() => {
 
 const STORAGE_PREFIX = "rideprep:packingtips:";
-const MODEL = "gemini-1.5-flash";
+const MODEL = "gemini-2.0-flash-exp";
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 function cacheKey({ lat, lng, date, weatherHash }) {
@@ -182,5 +182,29 @@ console.log("[packingTips] config", {
   hasKey: !!window.__GEMINI_API_KEY__,
   model: MODEL,
 });
+
+// One-shot probe: list the models this API key can actually use, so
+// "model not found" failures become obvious. Uses the proxy (the
+// worker exposes the models list on GET) when configured; otherwise
+// hits Google directly with the raw key. Skipped if neither is set.
+(function listModels() {
+  const proxyUrl = window.__PACKING_TIPS_PROXY_URL__;
+  const apiKey = window.__GEMINI_API_KEY__;
+  if (!proxyUrl && !apiKey) return;
+  const url = proxyUrl
+    ? proxyUrl
+    : `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+  fetch(url, { method: "GET" })
+    .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    .then((data) => {
+      const names = (data && data.models || []).map((m) => m.name);
+      // eslint-disable-next-line no-console
+      console.log("[packingTips] available models:", names);
+    })
+    .catch((e) => {
+      // eslint-disable-next-line no-console
+      console.warn("[packingTips] could not list models:", e && e.message ? e.message : e);
+    });
+})();
 
 })();
