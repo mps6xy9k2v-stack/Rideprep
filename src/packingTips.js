@@ -157,6 +157,13 @@ async function fetchPackingTips(ctx) {
      data.candidates[0].content && data.candidates[0].content.parts &&
      data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text) || "";
 
+  // eslint-disable-next-line no-console
+  console.log("[packingTips] raw response text:", text);
+  // eslint-disable-next-line no-console
+  console.log("[packingTips] raw response type:", typeof text);
+  // eslint-disable-next-line no-console
+  console.log("[packingTips] raw response length:", text && text.length);
+
   const tips = parseGeminiResponse(text);
   if (!tips.length) throw new Error("Response was not a JSON array of strings");
   return tips.slice(0, 7);
