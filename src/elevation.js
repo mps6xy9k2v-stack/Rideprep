@@ -206,7 +206,7 @@ function computeProfile(coords) {
     samples[i] = { km: targetD / 1000, ele };
   }
 
-  return {
+  const result = {
     totalAscent: Math.round(totalAscent),
     totalDescent: Math.round(totalDescent),
     max: Math.round(maxEle),
@@ -215,11 +215,23 @@ function computeProfile(coords) {
     samples,
     hasElevation: true,
   };
+  // TODO: remove once the constants→display link is confirmed live. Logs
+  // per call so we can prove the pipeline actually ran with the current
+  // constants (vs. a saved tour reusing baked-in ascent values).
+  // eslint-disable-next-line no-console
+  console.log("[elevation] profile", {
+    inputs: coords.length, resampled: resampled.length,
+    params: { sigma: GAUSSIAN_SIGMA, resampleM: RESAMPLE_DISTANCE_M, deltaM: MIN_DELTA_METERS },
+    totalKm: result.totalKm, totalAscent: result.totalAscent, totalDescent: result.totalDescent,
+  });
+  return result;
 }
 
 window.RP_Elevation = {
   computeProfile,
   PARAMS: { GAUSSIAN_SIGMA, MIN_DELTA_METERS, RESAMPLE_DISTANCE_M, DESPIKE_THRESHOLD_M, CHART_POINTS },
 };
+// eslint-disable-next-line no-console
+console.log("[elevation] script loaded with", window.RP_Elevation.PARAMS);
 
 })();
