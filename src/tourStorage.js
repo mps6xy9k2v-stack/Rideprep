@@ -196,7 +196,7 @@ function loadTourBlob(id) { return readBlob(id); }
 // Build/update the index entry + write the per-tour blob. Returns
 // { ok, id, reason? } so callers can distinguish quota failures from
 // other errors (and from no-op when the input is invalid).
-function saveTour({ tour, geometry, stops, dailyKm, startDate, id, name } = {}) {
+function saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, id, name } = {}) {
   if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
   if (!id) return { ok: false, reason: "invalid-id" };
   const meta = {
@@ -216,7 +216,7 @@ function saveTour({ tour, geometry, stops, dailyKm, startDate, id, name } = {}) 
   else list.push(meta);
   const ixWrite = writeIndex(list);
   if (!ixWrite.ok) return { ok: false, reason: ixWrite.reason, id };
-  const blobWrite = writeBlob(id, { tour, geometry, stops, dailyKm, startDate });
+  const blobWrite = writeBlob(id, { tour, geometry, stops, stopCoords, dailyKm, startDate });
   if (!blobWrite.ok) return { ok: false, reason: blobWrite.reason, id };
   notify("save", { id });
   return { ok: true, id };

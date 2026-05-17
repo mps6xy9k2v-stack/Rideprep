@@ -79,12 +79,12 @@ function buildTourName(from, to, startDate) {
 // derived ID and display name (which the storage layer doesn't know
 // how to compute). Returns the same { ok, reason?, id } envelope so
 // callers can surface quota errors.
-function saveTour({ tour, geometry, stops, dailyKm, startDate }) {
+function saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate }) {
   if (!_TS()) return { ok: false, reason: "no-storage" };
   if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
   const id = tourIdFor(tour.from, tour.to, startDate);
   const name = buildTourName(tour.from, tour.to, startDate);
-  return _TS().saveTour({ tour, geometry, stops, dailyKm, startDate, id, name });
+  return _TS().saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, id, name });
 }
 
 function deleteTour(id) {
@@ -683,7 +683,7 @@ async function nominatimSearch(query) {
     _debugAc("sample result[0]:", data[0]);
   }
   const seen = new Set();
-  const labels = [];
+  const items = [];
   let rejectedSample = null;
   let acceptedSample = null;
   for (const item of data) {
@@ -703,18 +703,37 @@ async function nominatimSearch(query) {
       };
     }
     const label = _formatSuggestion(item);
-    if (!seen.has(label)) { seen.add(label); labels.push(label); }
-    if (labels.length >= 8) break;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    const lat = Number(item.lat);
+    const lng = Number(item.lon);
+    items.push({
+      label,
+      lat: Number.isFinite(lat) ? lat : null,
+      lng: Number.isFinite(lng) ? lng : null,
+      importance: Number(item.importance) || 0,
+      class: item.class,
+      type: item.type,
+    });
+    if (items.length >= 8) break;
   }
-  _debugAc("after filter, results count:", labels.length);
+  _debugAc("after filter, results count:", items.length);
   _debugAc("filter rejected sample:", rejectedSample);
   _debugAc("filter accepted sample:", acceptedSample);
-  _nomCache.set(cacheKey, labels);
-  return labels;
+  _nomCache.set(cacheKey, items);
+  return items;
 }
 
 // ARIA combobox with debounced Nominatim typeahead.
-function CityAutocomplete({ inputId, label, value, onChange, placeholder, error, checking }) {
+// onChange(value)            — fired on every keystroke; clears any
+//                              previously captured coords for this stop.
+// onSelect(item)             — fired when the user picks a suggestion;
+//                              item = { label, lat, lng, ... }. The
+//                              coords are stored alongside the label so
+//                              routing can skip Pelias re-geocoding
+//                              (which keeps snapping large cities to
+//                              random suburbs).
+function CityAutocomplete({ inputId, label, value, onChange, onSelect, placeholder, error, checking }) {
   const [localVal, setLocalVal] = useState(value);
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -750,9 +769,10 @@ function CityAutocomplete({ inputId, label, value, onChange, placeholder, error,
     }, 300);
   }
 
-  function pick(lbl) {
-    setLocalVal(lbl);
-    onChange(lbl);
+  function pick(item) {
+    setLocalVal(item.label);
+    if (onSelect) onSelect(item);
+    else onChange(item.label);
     setResults([]);
     setOpen(false);
     setActiveIdx(-1);
@@ -813,16 +833,16 @@ function CityAutocomplete({ inputId, label, value, onChange, placeholder, error,
             ? <li className="city-ac-empty" role="option" aria-disabled="true">
                 Keine deutsche Stadt gefunden.
               </li>
-            : results.map((lbl, i) => (
+            : results.map((item, i) => (
                 <li
-                  key={lbl + i}
+                  key={item.label + i}
                   id={`${listId}-${i}`}
                   role="option"
                   aria-selected={i === activeIdx}
                   className={"city-ac-opt" + (i === activeIdx ? " city-ac-active" : "")}
-                  onMouseDown={(e) => { e.preventDefault(); pick(lbl); }}
+                  onMouseDown={(e) => { e.preventDefault(); pick(item); }}
                 >
-                  {lbl}
+                  {item.label}
                 </li>
               ))
           }
@@ -1093,7 +1113,7 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearA
   );
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
+function TourForm({ stops, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
   const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
   const planDisabled = loading || anyInvalid || anyChecking;
@@ -1121,6 +1141,7 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
                   label={label}
                   value={stop}
                   onChange={(v) => setStop(i, v)}
+                  onSelect={(item) => setStopFromSuggestion(i, item)}
                   placeholder="Stadt eingeben …"
                   error={stopErrors[i]}
                   checking={stopChecking[i]}
@@ -1791,6 +1812,18 @@ function Tour({ tweaks }) {
   const [stops, setStops] = useState(() =>
     (saved && Array.isArray(saved.stops) && saved.stops.length >= 2) ? saved.stops : defaultStops
   );
+  // Parallel to `stops`. Filled in when the user picks a city from the
+  // autocomplete dropdown — the Nominatim record already has the city
+  // centre lat/lng, so we use it directly during routing instead of
+  // re-geocoding the label through ORS Pelias (which keeps snapping
+  // large cities like Stuttgart to the nearest suburb that happens to
+  // share an admin-boundary token). Manually typed stops stay at null
+  // and fall back to orsGeocode().
+  const [stopCoords, setStopCoords] = useState(() =>
+    (saved && Array.isArray(saved.stopCoords) && saved.stopCoords.length === (saved.stops || []).length)
+      ? saved.stopCoords
+      : new Array(((saved && saved.stops) || defaultStops).length).fill(null)
+  );
   const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
   const [startDate, setStartDate] = useState(() => {
     const persisted = saved && saved.startDate;
@@ -1805,6 +1838,14 @@ function Tour({ tweaks }) {
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
+    // Free typing invalidates any previously captured Nominatim coords.
+    setStopCoords((prev) => prev.map((c, idx) => (idx === i ? null : c)));
+  }, []);
+  const setStopFromSuggestion = useCallback((i, item) => {
+    setStops((prev) => prev.map((s, idx) => (idx === i ? item.label : s)));
+    const coord = (item && Number.isFinite(item.lat) && Number.isFinite(item.lng))
+      ? { lat: item.lat, lng: item.lng } : null;
+    setStopCoords((prev) => prev.map((c, idx) => (idx === i ? coord : c)));
   }, []);
   const addStop = useCallback((afterIdx) => {
     setStops((prev) => {
@@ -1812,12 +1853,23 @@ function Tour({ tweaks }) {
       next.splice(afterIdx + 1, 0, "");
       return next;
     });
+    setStopCoords((prev) => {
+      const next = [...prev];
+      next.splice(afterIdx + 1, 0, null);
+      return next;
+    });
   }, []);
   const removeStop = useCallback((i) => {
     setStops((prev) => (prev.length > 2 ? prev.filter((_, idx) => idx !== i) : prev));
+    setStopCoords((prev) => (prev.length > 2 ? prev.filter((_, idx) => idx !== i) : prev));
   }, []);
   const swapEnds = useCallback(() => {
     setStops((prev) => {
+      const next = [...prev];
+      [next[0], next[next.length - 1]] = [next[next.length - 1], next[0]];
+      return next;
+    });
+    setStopCoords((prev) => {
       const next = [...prev];
       [next[0], next[next.length - 1]] = [next[next.length - 1], next[0]];
       return next;
@@ -1890,7 +1942,12 @@ function Tour({ tweaks }) {
   const handleLoadTour = useCallback((id) => {
     const blob = readTourBlob(id);
     if (blob && blob.tour) {
-      if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
+      if (Array.isArray(blob.stops) && blob.stops.length >= 2) {
+        setStops(blob.stops);
+        const coords = Array.isArray(blob.stopCoords) && blob.stopCoords.length === blob.stops.length
+          ? blob.stopCoords : new Array(blob.stops.length).fill(null);
+        setStopCoords(coords);
+      }
       if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
       setStartDate(blob.startDate || null);
       setTour(blob.tour);
@@ -1901,6 +1958,7 @@ function Tour({ tweaks }) {
     const entry = readToursIndex().find((t) => t.id === id);
     if (!entry) return;
     setStops([entry.from, entry.to]);
+    setStopCoords([null, null]);
     setStartDate(entry.startDate || null);
     setActiveStage(0);
   }, []);
@@ -1914,6 +1972,7 @@ function Tour({ tweaks }) {
       setTour({ ...demo, _geom: undefined });
       setGeometry(demo._geom);
       setStops(defaultStops);
+      setStopCoords(new Array(defaultStops.length).fill(null));
       setActiveStage(0);
     }
     setSavedTours(readToursIndex());
@@ -1927,6 +1986,7 @@ function Tour({ tweaks }) {
     setTour({ ...demo, _geom: undefined });
     setGeometry(demo._geom);
     setStops(defaultStops);
+    setStopCoords(new Array(defaultStops.length).fill(null));
     setStartDate(null);
     setActiveStage(0);
   }, [initialDemo, defaultStops]);
@@ -1936,10 +1996,16 @@ function Tour({ tweaks }) {
     setError(null);
     setLoading(true);
     try {
-      const cleanStops = stops.map((s) => s.trim()).filter(Boolean);
-      if (cleanStops.length < 2) {
+      // Build aligned (text, coord) pairs so we keep dropdown-captured
+      // coords with their stop even after empty stops are filtered out.
+      const pairs = stops.map((s, i) => ({
+        text: String(s || "").trim(),
+        coord: stopCoords[i] || null,
+      })).filter((p) => p.text);
+      if (pairs.length < 2) {
         throw new Error("Need at least a From and To.");
       }
+      const cleanStops = pairs.map((p) => p.text);
 
       if (!key) {
         const t = initialDemo();
@@ -1949,7 +2015,25 @@ function Tour({ tweaks }) {
         return;
       }
 
-      const geo = await Promise.all(cleanStops.map((s) => orsGeocode(s, key)));
+      // Prefer Nominatim coords captured when the user picked from the
+      // autocomplete dropdown — these are the city centre per OSM. Fall
+      // back to ORS Pelias only for stops that were typed by hand and
+      // never confirmed via the dropdown.
+      const geo = await Promise.all(pairs.map((p) => {
+        if (p.coord) {
+          // eslint-disable-next-line no-console
+          console.log("[geocoder] using stored Nominatim coords for", p.text, p.coord);
+          return Promise.resolve({ lat: p.coord.lat, lng: p.coord.lng, label: p.text });
+        }
+        return orsGeocode(p.text, key);
+      }));
+      // Diagnostic: surface the final coords being sent to the directions
+      // API so we can verify city-centre alignment. TODO: remove once the
+      // Stuttgart / Hamburg / Munich / Köln test set passes.
+      geo.forEach((g, i) => {
+        // eslint-disable-next-line no-console
+        console.log(`[routing] stop ${i} "${cleanStops[i]}" -> lat ${g.lat}, lng ${g.lng}`);
+      });
       const labels = geo.map((g, i) => g.label || cleanStops[i]);
       const fc = await orsDirections(geo, key);
       const feature = fc.features && fc.features[0];
@@ -1990,6 +2074,7 @@ function Tour({ tweaks }) {
         tour: nextTour,
         geometry: coords,
         stops: labels,
+        stopCoords: pairs.map((p) => p.coord),
         dailyKm,
         startDate,
       });
@@ -2031,7 +2116,8 @@ function Tour({ tweaks }) {
             </div>
           )}
           <TourForm
-            stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
+            stops={stops} setStop={setStop} setStopFromSuggestion={setStopFromSuggestion}
+            addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
             onPlan={planRoute}
