@@ -1,5 +1,5 @@
 /* global window */
-// AI-generated packing tips via the Google Gemini API (gemini-2.0-flash).
+// AI-generated packing tips via the Google Gemini API (gemini-1.5-flash).
 //
 // SECURITY NOTE: This calls generativelanguage.googleapis.com directly
 // from the browser using window.__GEMINI_API_KEY__. Anyone who can open
@@ -18,7 +18,7 @@
 (() => {
 
 const STORAGE_PREFIX = "rideprep:packingtips:";
-const MODEL = "gemini-2.0-flash";
+const MODEL = "gemini-1.5-flash";
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 function cacheKey({ lat, lng, date, weatherHash }) {
