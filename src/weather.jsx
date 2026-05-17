@@ -628,25 +628,25 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       const isActive = stopIdx === activeIdx;
       const isClimate = s.kind === "climate";
       const cool = code != null && code >= 50;
-      const tempLabel = daily
-        ? `${Math.round(daily.temperature_2m_max)}° / ${Math.round(daily.temperature_2m_min)}°`
-        : "";
       const iconPx = isActive ? 22 : 18;
       const iconHtml = code != null ? iconSvgString(code, iconPx) : "";
-      const displayName = shortCity(s.to);
-      const showTemp = !isClimate && tempLabel;
-      // Outer divIcon size = the icon badge size; info box is positioned
-      // absolutely and overflows the divIcon's bounding box — Leaflet
-      // doesn't clip divIcon contents.
+      // Outer divIcon size = the circular badge size; the pill is
+      // positioned absolutely and overflows the divIcon's bounding box
+      // — Leaflet doesn't clip divIcon contents.
       const badgePx = isActive ? 36 : 28;
+      // Pill (the offset stage-selector beside the route). Selected
+      // pill is always #5BC8F5 with white text; others get a
+      // weather-coded background so the route reads as a forecast row
+      // at a glance.
+      const pillBg = isActive ? "#5BC8F5" : weatherBgFor(code);
+      const pillFg = isActive ? "#ffffff" : "#0f1a2a";
       const html = `
         <div class="stage-marker${isActive ? " active" : ""}${isClimate ? " climate" : ""}">
           <div class="stage-icon${cool ? " cool" : ""}" title="${escapeHtml(s.to || "")}">
             ${iconHtml}
           </div>
-          <div class="stage-info-box">
-            <div class="stage-city" title="${escapeHtml(s.to || "")}">${escapeHtml(displayName)}</div>
-            ${showTemp ? `<div class="stage-temp">${tempLabel}</div>` : ""}
+          <div class="stage-info-box" style="background:${pillBg};color:${pillFg};" title="${escapeHtml(s.to || "")}">
+            <span class="stage-pill-num">${stopIdx + 1}</span>
           </div>
         </div>
       `;

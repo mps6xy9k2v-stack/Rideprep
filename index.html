@@ -2107,6 +2107,10 @@ input[type="range"]::-moz-range-thumb {
               0 2px 8px rgba(20, 30, 50, 0.22);
 }
 
+/* The pill-shaped stage-selector that floats next to each circle on
+   the route. Background colour comes from inline style (weather-code
+   bucket, or #5BC8F5 when active); only layout + ring + hover live
+   in CSS so the inline colours can never be lost. */
 .stage-info-box {
   --ox: 0px;
   --oy: 0px;
@@ -2114,15 +2118,14 @@ input[type="range"]::-moz-range-thumb {
   top: 50%;
   left: 50%;
   transform: translate(calc(-50% + var(--ox)), calc(-50% + var(--oy)));
-  background: #ffffff;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 100px;
   border: 1px solid rgba(20, 30, 50, 0.12);
-  border-radius: 10px;
-  padding: 6px 8px;
   box-shadow: 0 2px 6px rgba(20, 30, 50, 0.18);
+  display: grid; place-items: center;
   font-family: var(--mono);
-  color: #0f1a2a;
-  white-space: nowrap;
-  display: grid; gap: 2px;
   cursor: pointer;
   pointer-events: auto;
   transition: transform .15s ease, box-shadow .15s ease;
@@ -2133,20 +2136,16 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 4px 10px rgba(20, 30, 50, 0.22);
 }
 .stage-marker.active .stage-info-box {
-  border-color: var(--accent);
-  box-shadow: 0 4px 10px rgba(20, 30, 50, 0.22);
+  border-color: #5BC8F5;
+  box-shadow: 0 0 0 3px color-mix(in oklch, #5BC8F5 28%, transparent),
+              0 4px 10px rgba(20, 30, 50, 0.22);
 }
-.stage-city {
-  font-size: 10px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.stage-pill-num {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
 }
-.stage-temp {
-  font-size: 11px;
-}
+.stage-marker.active .stage-pill-num { font-size: 13px; }
 
 .stage-marker.climate {
   opacity: 0.75;
