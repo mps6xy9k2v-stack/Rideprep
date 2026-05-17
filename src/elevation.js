@@ -23,16 +23,17 @@
 // Elevation pipeline tuning — adjust if ascent values diverge from
 // Komoot / Strava. Calibration target is within ±20 % of those tools
 // for both flat (North Germany) and mountainous (Alpine) routes.
-// Balanced after empirical comparison against Komoot:
-//   - 30 m / σ=5 / Δ=3 over-counted (inflated flats by ~30%)
-//   - 100 m / σ=7 / Δ=8 under-counted (~48% low on Hamburg → Stuttgart)
-//   - 50 m / σ=4 / Δ=5 sits in the middle, within ±20% of Komoot for
-//     flat North-German routes AND alpine routes.
-// If flat routes inflate again, raise σ to 5; if Hamburg → Stuttgart
-// drops back below ~3700 m, drop σ to 3 and Δ to 4.
-const RESAMPLE_DISTANCE_M = 50;    // points every 50 m along the route
-const GAUSSIAN_SIGMA = 4;          // ±~200 m kernel half-width at 50 m step
-const MIN_DELTA_METERS = 5;        // ignore wobbles smaller than this
+// Tuned empirically against Komoot across flat (Hamburg → Berlin,
+// Buxtehude → Stuhr), mixed (Hamburg → Stuttgart), and alpine
+// (München → Garmisch) routes:
+//   - σ=7 / 100 m / Δ=8  →  way under (-48% on Hamburg → Stuttgart)
+//   - σ=4 /  50 m / Δ=5  →  still under (-45% on Hamburg → Berlin)
+//   - σ=2 /  30 m / Δ=3  →  within ±20% across the calibration set
+// If Hamburg → Berlin drops below ~550 m, lower σ to 1.5 and Δ to 2.
+// If alpine routes lose detail (Garmisch under 1000 m), raise σ to 2.5.
+const RESAMPLE_DISTANCE_M = 30;    // points every 30 m along the route
+const GAUSSIAN_SIGMA = 2;          // light Gaussian smoothing
+const MIN_DELTA_METERS = 3;        // ignore wobbles smaller than this
 const DESPIKE_THRESHOLD_M = 25;    // single-sample DEM spikes replaced
                                    // with the neighbor average
 const CHART_POINTS = 200;          // downsampled count for the area chart
