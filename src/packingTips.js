@@ -121,6 +121,11 @@ async function fetchPackingTips(ctx) {
     generationConfig: {
       temperature: 0.7,
       maxOutputTokens: 500,
+      // gemini-2.5-flash respects this and returns pure JSON — no
+      // ```json fences, no "Here's your list:" preamble, no thinking
+      // blocks. Older Gemini variants ignore it, which is fine: the
+      // parser below still tolerates fences and prose.
+      responseMimeType: "application/json",
     },
   };
 
@@ -152,19 +157,37 @@ async function fetchPackingTips(ctx) {
      data.candidates[0].content && data.candidates[0].content.parts &&
      data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text) || "";
 
-  // Strip code fences if the model wraps the array in ```json ... ```.
-  const cleaned = text.replace(/```json|```/g, "").trim();
-  let tips;
-  try { tips = JSON.parse(cleaned); }
+  const tips = parseGeminiResponse(text);
+  if (!tips.length) throw new Error("Response was not a JSON array of strings");
+  return tips.slice(0, 7);
+}
+
+// Robust parser for the model's text payload. Handles:
+//   - pure JSON (when responseMimeType: application/json is honoured),
+//   - ```json … ``` / ``` … ``` fences,
+//   - leading <thinking>…</thinking> blocks emitted by reasoning models,
+//   - prose wrapping by extracting the first '[' to the last ']'.
+// Returns an array of non-empty trimmed strings, or [] on any failure.
+function parseGeminiResponse(rawText) {
+  if (!rawText || typeof rawText !== "string") return [];
+  let cleaned = rawText.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
+  cleaned = cleaned.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+  // Try the whole string first; if it doesn't parse, slice the
+  // outermost bracketed range.
+  let parsed = null;
+  try { parsed = JSON.parse(cleaned); }
   catch {
-    // Be lenient: extract the first JSON array we can find.
-    const m = cleaned.match(/\[[\s\S]*?\]/);
-    if (m) { try { tips = JSON.parse(m[0]); } catch {} }
+    const start = cleaned.indexOf("[");
+    const end = cleaned.lastIndexOf("]");
+    if (start === -1 || end === -1 || end <= start) return [];
+    try { parsed = JSON.parse(cleaned.slice(start, end + 1)); }
+    catch { return []; }
   }
-  if (!Array.isArray(tips) || !tips.length || !tips.every((t) => typeof t === "string")) {
-    throw new Error("Response was not a JSON array of strings");
-  }
-  return tips.map((t) => t.trim()).filter(Boolean).slice(0, 7);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .filter((s) => typeof s === "string")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 window.RP_PackingTips = {
