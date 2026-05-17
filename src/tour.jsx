@@ -179,12 +179,57 @@ const ORS_BASE = "https://api.openrouteservice.org";
 const COUNTRY_CODE_ALPHA3 = "DEU";
 const GERMANY_ONLY_MSG = "Rideprep currently supports only addresses in Germany. Please enter a German location.";
 
+// Pelias layer ranking for "what does the user mean when they type a
+// city name". Locality / localadmin (admin level 8 in Germany) are the
+// actual city/town centres; lower-ranked layers are streets, venues,
+// or addresses that often land on the wrong side of town.
+const _ORS_LAYER_RANK = {
+  locality: 0,
+  localadmin: 1,
+  borough: 2,
+  neighbourhood: 3,
+  macrocounty: 4,
+  county: 5,
+  region: 6,
+  macroregion: 7,
+};
+
+function _pickBestGeocodeFeature(features) {
+  if (!features || !features.length) return null;
+  // Score = layer rank (lower better) then -confidence (higher better).
+  const scored = features.map((f) => {
+    const p = f.properties || {};
+    const layer = p.layer || "";
+    const rank = _ORS_LAYER_RANK[layer];
+    const conf = typeof p.confidence === "number" ? p.confidence : 0;
+    return { f, rank: rank == null ? 99 : rank, conf };
+  });
+  scored.sort((a, b) => (a.rank - b.rank) || (b.conf - a.conf));
+  return scored[0].f;
+}
+
 async function orsGeocode(query, key) {
-  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1&boundary.country=${COUNTRY_CODE_ALPHA3}`;
+  // size=5 + layers filter so we get a few city-like candidates and pick
+  // the strongest one. Restricting to locality/localadmin keeps Pelias
+  // from returning a street or venue when the user typed a city name.
+  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}`
+    + `&text=${encodeURIComponent(query)}`
+    + `&size=5`
+    + `&layers=locality,localadmin,borough`
+    + `&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Geocoding failed: ${r.status}`);
   const j = await r.json();
-  const f = j.features && j.features[0];
+  // TODO: remove once verified — surfaces the candidate list so we can
+  // confirm the chosen feature is the city centre.
+  // eslint-disable-next-line no-console
+  console.log("[geocoder]", query, (j.features || []).map((f) => ({
+    label: f.properties && f.properties.label,
+    layer: f.properties && f.properties.layer,
+    confidence: f.properties && f.properties.confidence,
+    coords: f.geometry && f.geometry.coordinates,
+  })));
+  const f = _pickBestGeocodeFeature(j.features);
   if (!f) throw new Error(GERMANY_ONLY_MSG);
   // Belt-and-braces: ORS may occasionally fuzz the filter; reject any
   // result whose country code isn't DE / Germany.
@@ -194,6 +239,8 @@ async function orsGeocode(query, key) {
   if (cc && cc !== "DEU" && cc !== "DE") throw new Error(GERMANY_ONLY_MSG);
   if (!cc && cn && cn !== "germany" && cn !== "deutschland") throw new Error(GERMANY_ONLY_MSG);
   const [lng, lat] = f.geometry.coordinates;
+  // eslint-disable-next-line no-console
+  console.log("[geocoder] picked", query, "->", { lng, lat, label: props.label, layer: props.layer });
   return { lng, lat, label: props.label };
 }
 
@@ -209,6 +256,11 @@ async function orsReverse(lat, lng, key) {
 
 async function orsDirections(waypoints, key) {
   const url = `${ORS_BASE}/v2/directions/cycling-regular/geojson`;
+  // radiuses: [-1, -1, ...] = unlimited snapping radius per waypoint, so
+  // the route endpoint snaps to a cycling path even when the city-centre
+  // point is far from the cycling network (large pedestrianised squares,
+  // motorway-only catchments, etc.). Without this, ORS rejects the
+  // request or snaps to a closer-but-wrong path.
   const r = await fetch(url, {
     method: "POST",
     headers: {
@@ -218,6 +270,7 @@ async function orsDirections(waypoints, key) {
     },
     body: JSON.stringify({
       coordinates: waypoints.map((w) => [w.lng, w.lat]),
+      radiuses: waypoints.map(() => -1),
       elevation: true,
       instructions: false,
     }),
