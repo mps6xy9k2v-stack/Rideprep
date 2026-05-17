@@ -319,9 +319,11 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key, opts) {
     totalDist += seg;
   }
 
-  // Default behaviour: ceil(total / daily) stages — a possibly-short
-  // final stage carries the remainder.
+  // Default behaviour: ceil(total / daily) stages, walking at the
+  // exact daily target. The final stage absorbs whatever's left, which
+  // can be tiny — the avoidShortFinal branch below handles that case.
   let numStages = Math.max(1, Math.ceil(totalDist / dailyM));
+  let effectiveDailyM = dailyM;
   let mergeApplied = false;
   if (avoidShortFinal && numStages > 1) {
     const tentative = Math.floor(totalDist / dailyM);
@@ -331,11 +333,11 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key, opts) {
       const overshootM = newPerStageM - dailyM;
       if (overshootM <= SHORT_STAGE_MAX_OVERSHOOT_KM * 1000) {
         numStages = tentative;
+        effectiveDailyM = newPerStageM;
         mergeApplied = true;
       }
     }
   }
-  const effectiveDailyM = totalDist / numStages;
 
   const stages = [];
   let stageStart = 0;
