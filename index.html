@@ -2086,16 +2086,24 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   inset: 0;
   border-radius: 50%;
+  /* background + color are set inline based on the stage's weather
+     code (or accent when selected); the rules below are just visual
+     defaults / fallbacks. */
   background: #ffffff;
   border: 1.5px solid #4cc9f0;
   display: grid; place-items: center;
-  color: #d68a2e;
+  color: #0f1a2a;
   cursor: pointer;
   pointer-events: auto;
   box-shadow: 0 2px 6px rgba(20, 30, 50, 0.18);
   transition: box-shadow .15s ease, transform .15s ease;
 }
-.stage-icon.cool { color: #2a8ec0; }
+.stage-icon-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
 .stage-icon:hover {
   box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 30%, transparent),
               0 2px 6px rgba(20, 30, 50, 0.18);
@@ -2106,6 +2114,7 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent),
               0 2px 8px rgba(20, 30, 50, 0.22);
 }
+.stage-marker.active .stage-icon-num { font-size: 15px; }
 
 .stage-info-box {
   --ox: 0px;

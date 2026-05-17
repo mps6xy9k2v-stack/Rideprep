@@ -501,7 +501,19 @@ function StagePeriodChips({ daily, hourly }) {
   );
 }
 
-// ---------- Map (Leaflet) ----------
+// Weather-code -> background color bucket for the on-map stage badges.
+// Selected stage overrides this to the app accent regardless of code.
+function weatherBgFor(code) {
+  if (code == null) return "#F0F0F0";
+  if (code <= 1) return "#FFF3CD";                       // clear / mostly clear
+  if (code <= 3) return "#F0F0F0";                       // partly cloudy
+  if (code <= 45) return "#D0D0D0";                      // overcast / fog
+  if (code >= 51 && code <= 67) return "#D0E8FF";        // drizzle / light rain
+  if (code >= 71 && code <= 77) return "#E8F4FF";        // snow
+  if (code >= 80 && code <= 82) return "#90C8FF";        // heavy rain / showers
+  if (code >= 95 && code <= 99) return "#C8B0FF";        // thunderstorm
+  return "#F0F0F0";
+}
 // Each stage marker has two visual parts inside one divIcon: a small
 // circular weather badge centred exactly on the stage lat/lng (the
 // "icon"), and a city/temp card placed 55 px perpendicular to the
@@ -613,22 +625,24 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       const code = daily ? daily.weathercode : (climate ? 3 : null);
       const isActive = stopIdx === activeIdx;
       const isClimate = s.kind === "climate";
-      const cool = code != null && code >= 50;
       const tempLabel = daily
         ? `${Math.round(daily.temperature_2m_max)}° / ${Math.round(daily.temperature_2m_min)}°`
         : "";
-      const iconPx = isActive ? 22 : 18;
-      const iconHtml = code != null ? iconSvgString(code, iconPx) : "";
       const displayName = shortCity(s.to);
       const showTemp = !isClimate && tempLabel;
-      // Outer divIcon size = the icon badge size; info box is positioned
+      // Outer divIcon size = the badge size; info box is positioned
       // absolutely and overflows the divIcon's bounding box — Leaflet
       // doesn't clip divIcon contents.
       const badgePx = isActive ? 36 : 28;
+      // Selected stage is always app-accent with white text; otherwise
+      // the badge is coloured by weather code so the route hints at the
+      // forecast at a glance.
+      const bg = isActive ? "#5BC8F5" : weatherBgFor(code);
+      const fg = isActive ? "#ffffff" : "#0f1a2a";
       const html = `
         <div class="stage-marker${isActive ? " active" : ""}${isClimate ? " climate" : ""}">
-          <div class="stage-icon${cool ? " cool" : ""}" title="${escapeHtml(s.to || "")}">
-            ${iconHtml}
+          <div class="stage-icon" style="background:${bg};color:${fg};" title="${escapeHtml(s.to || "")}">
+            <span class="stage-icon-num">${stopIdx + 1}</span>
           </div>
           <div class="stage-info-box">
             <div class="stage-city" title="${escapeHtml(s.to || "")}">${escapeHtml(displayName)}</div>
