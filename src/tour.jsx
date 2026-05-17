@@ -256,11 +256,11 @@ async function orsReverse(lat, lng, key) {
 
 async function orsDirections(waypoints, key) {
   const url = `${ORS_BASE}/v2/directions/cycling-regular/geojson`;
-  // radiuses: [-1, -1, ...] = unlimited snapping radius per waypoint, so
-  // the route endpoint snaps to a cycling path even when the city-centre
-  // point is far from the cycling network (large pedestrianised squares,
-  // motorway-only catchments, etc.). Without this, ORS rejects the
-  // request or snaps to a closer-but-wrong path.
+  // 2 km snap radius per waypoint: large enough to find a routable
+  // cycle path from any reasonable town-centre point, small enough to
+  // keep ORS from snapping to a path next to a sewage plant on the
+  // outskirts (Kläranlage Bad Laer was the original symptom).
+  const SNAP_RADIUS_M = 2000;
   const r = await fetch(url, {
     method: "POST",
     headers: {
@@ -270,7 +270,7 @@ async function orsDirections(waypoints, key) {
     },
     body: JSON.stringify({
       coordinates: waypoints.map((w) => [w.lng, w.lat]),
-      radiuses: waypoints.map(() => -1),
+      radiuses: waypoints.map(() => SNAP_RADIUS_M),
       elevation: true,
       instructions: false,
     }),
@@ -2108,7 +2108,21 @@ function Tour({ tweaks }) {
       }
 
       const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
-      itin.stages = itin.stages.map((s) => {
+      // For the final stage, prefer the user's intended destination
+      // coord (the place-node lat/lng from Nominatim) over ORS's snapped
+      // polyline endpoint. ORS sometimes ends the route at a peripheral
+      // cycle path — e.g. next to Kläranlage Bad Laer — which is
+      // geometrically nearest but visually wrong. The route line still
+      // snaps as ORS produced it; only the destination marker / stage
+      // endpoint coord is corrected.
+      const destPair = pairs[pairs.length - 1];
+      const destInput = destPair && destPair.coord;
+      itin.stages = itin.stages.map((s, idx) => {
+        const isLast = idx === itin.stages.length - 1;
+        if (isLast && destInput
+            && Number.isFinite(destInput.lat) && Number.isFinite(destInput.lng)) {
+          return { ...s, lat: destInput.lat, lng: destInput.lng };
+        }
         const c = coords[s.endIdx];
         return {
           ...s,
