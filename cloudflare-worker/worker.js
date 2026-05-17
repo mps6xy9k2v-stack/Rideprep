@@ -34,7 +34,7 @@
 //   - The Origin header must match an entry in ALLOWED_ORIGINS.
 //   - maxOutputTokens is capped at 1000 server-side regardless of what
 //     the client asked for.
-//   - Model is hardcoded to gemini-2.0-flash-001 — clients cannot upgrade
+//   - Model is hardcoded to gemini-2.0-flash-lite — clients cannot upgrade
 //     to a paid model via this proxy.
 //   - The body must be valid JSON with a `contents` field.
 
@@ -45,7 +45,7 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:8080",
 ];
 
-const MODEL = "gemini-2.0-flash-001";
+const MODEL = "gemini-2.0-flash-lite";
 const UPSTREAM = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 function corsHeaders(origin) {
