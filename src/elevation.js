@@ -23,18 +23,16 @@
 // Elevation pipeline tuning — adjust if ascent values diverge from
 // Komoot / Strava. Calibration target is within ±20 % of those tools
 // for both flat (North Germany) and mountainous (Alpine) routes.
-const RESAMPLE_DISTANCE_M = 100;   // higher = fewer noise points
-const GAUSSIAN_SIGMA = 7;          // wider Gaussian = smoother. sigma=7
-                                   // at 100 m resample = ±700 m kernel
-                                   // half-width; flattens SRTM's 5-10 m
-                                   // noise on North-German plateau
-                                   // routes while still preserving
-                                   // Alpine climbs. If empirical data
-                                   // shows flat routes UNDER-counting,
-                                   // drop to 6; if Alpine routes drop
-                                   // below 1000 m the smoothing is too
-                                   // aggressive — also drop to 6.
-const MIN_DELTA_METERS = 8;        // ignore wobbles smaller than this
+// Balanced after empirical comparison against Komoot:
+//   - 30 m / σ=5 / Δ=3 over-counted (inflated flats by ~30%)
+//   - 100 m / σ=7 / Δ=8 under-counted (~48% low on Hamburg → Stuttgart)
+//   - 50 m / σ=4 / Δ=5 sits in the middle, within ±20% of Komoot for
+//     flat North-German routes AND alpine routes.
+// If flat routes inflate again, raise σ to 5; if Hamburg → Stuttgart
+// drops back below ~3700 m, drop σ to 3 and Δ to 4.
+const RESAMPLE_DISTANCE_M = 50;    // points every 50 m along the route
+const GAUSSIAN_SIGMA = 4;          // ±~200 m kernel half-width at 50 m step
+const MIN_DELTA_METERS = 5;        // ignore wobbles smaller than this
 const DESPIKE_THRESHOLD_M = 25;    // single-sample DEM spikes replaced
                                    // with the neighbor average
 const CHART_POINTS = 200;          // downsampled count for the area chart
