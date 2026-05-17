@@ -777,7 +777,7 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
                   + (w.isRecoveryWeek ? " rest" : "")
                   + (isSelected ? " selected" : "")
                 }
-                style={{ height: `${(w.totalTSS / maxTSS) * 100}%` }}
+                style={{ height: `${(w.totalTSS / maxTSS) * 90}%` }}
                 onClick={() => onSelectWeek(w.number)}
                 aria-pressed={isSelected}
                 title={w.isRecoveryWeek
