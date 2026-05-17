@@ -1214,7 +1214,11 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
             disabled={loading || !ctx}
             aria-label="Regenerate packing tips"
           >
-            <span className={loading ? "spin" : ""}>↻</span>
+            <span className={loading ? "spin" : ""} aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2L13.09 8.26L19 6L14.74 10.91L21 12L14.74 13.09L19 18L13.09 15.74L12 22L10.91 15.74L5 18L9.26 13.09L3 12L9.26 10.91L5 6L10.91 8.26L12 2Z"/>
+              </svg>
+            </span>
           </button>
         )}
       </div>
