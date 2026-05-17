@@ -501,8 +501,10 @@ function StagePeriodChips({ daily, hourly }) {
   );
 }
 
-// Weather-code -> background color bucket for the on-map stage badges.
-// Selected stage overrides this to the app accent regardless of code.
+// Weather-code -> background color bucket for the .wx3-stage pill
+// row below the map. NOT used by the circular map markers — those
+// keep their original white-with-weather-icon styling. Selected pill
+// overrides this to the app accent via the .wx3-stage.active rule.
 function weatherBgFor(code) {
   if (code == null) return "#F0F0F0";
   if (code <= 1) return "#FFF3CD";                       // clear / mostly clear
@@ -625,24 +627,22 @@ function RouteMap({ stops, cache, activeIdx, onPick, tour }) {
       const code = daily ? daily.weathercode : (climate ? 3 : null);
       const isActive = stopIdx === activeIdx;
       const isClimate = s.kind === "climate";
+      const cool = code != null && code >= 50;
       const tempLabel = daily
         ? `${Math.round(daily.temperature_2m_max)}° / ${Math.round(daily.temperature_2m_min)}°`
         : "";
+      const iconPx = isActive ? 22 : 18;
+      const iconHtml = code != null ? iconSvgString(code, iconPx) : "";
       const displayName = shortCity(s.to);
       const showTemp = !isClimate && tempLabel;
-      // Outer divIcon size = the badge size; info box is positioned
+      // Outer divIcon size = the icon badge size; info box is positioned
       // absolutely and overflows the divIcon's bounding box — Leaflet
       // doesn't clip divIcon contents.
       const badgePx = isActive ? 36 : 28;
-      // Selected stage is always app-accent with white text; otherwise
-      // the badge is coloured by weather code so the route hints at the
-      // forecast at a glance.
-      const bg = isActive ? "#5BC8F5" : weatherBgFor(code);
-      const fg = isActive ? "#ffffff" : "#0f1a2a";
       const html = `
         <div class="stage-marker${isActive ? " active" : ""}${isClimate ? " climate" : ""}">
-          <div class="stage-icon" style="background:${bg};color:${fg};" title="${escapeHtml(s.to || "")}">
-            <span class="stage-icon-num">${stopIdx + 1}</span>
+          <div class="stage-icon${cool ? " cool" : ""}" title="${escapeHtml(s.to || "")}">
+            ${iconHtml}
           </div>
           <div class="stage-info-box">
             <div class="stage-city" title="${escapeHtml(s.to || "")}">${escapeHtml(displayName)}</div>
@@ -726,11 +726,17 @@ function StagesStrip({ stops, cache, activeIdx, onPick, tour }) {
         const code = daily ? daily.weathercode : (climate ? 3 : null);
         const Icon = code != null ? iconForCode(code) : IconCloud;
         const cool = code != null && code >= 50;
+        const isActive = i === activeIdx;
         const cls = "wx3-stage"
-          + (i === activeIdx ? " active" : "")
+          + (isActive ? " active" : "")
           + (s.kind === "climate" ? " climate" : "");
+        // Non-selected pills get a weather-code-coloured background so
+        // the strip reads as a forecast row at a glance. The active
+        // .wx3-stage CSS rule already handles the accent state, so we
+        // only set the inline background when this pill isn't selected.
+        const style = isActive ? undefined : { background: weatherBgFor(code) };
         return (
-          <div key={i} className={cls} onClick={() => onPick(i)}>
+          <div key={i} className={cls} style={style} onClick={() => onPick(i)}>
             <span className="num">Stage {i + 1}</span>
             <span className="day">{fmtLongDate(s.date)}</span>
             <span className="place" title={s.to}>{shortCity(s.to)}</span>

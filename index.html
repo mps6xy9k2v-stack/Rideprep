@@ -2086,24 +2086,16 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  /* background + color are set inline based on the stage's weather
-     code (or accent when selected); the rules below are just visual
-     defaults / fallbacks. */
   background: #ffffff;
   border: 1.5px solid #4cc9f0;
   display: grid; place-items: center;
-  color: #0f1a2a;
+  color: #d68a2e;
   cursor: pointer;
   pointer-events: auto;
   box-shadow: 0 2px 6px rgba(20, 30, 50, 0.18);
   transition: box-shadow .15s ease, transform .15s ease;
 }
-.stage-icon-num {
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1;
-}
+.stage-icon.cool { color: #2a8ec0; }
 .stage-icon:hover {
   box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 30%, transparent),
               0 2px 6px rgba(20, 30, 50, 0.18);
@@ -2114,7 +2106,6 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent),
               0 2px 8px rgba(20, 30, 50, 0.22);
 }
-.stage-marker.active .stage-icon-num { font-size: 15px; }
 
 .stage-info-box {
   --ox: 0px;
@@ -2198,10 +2189,20 @@ input[type="range"]::-moz-range-thumb {
 }
 .wx3-stage:hover { border-color: var(--line-strong); }
 .wx3-stage.active {
-  border-color: var(--accent);
-  background: color-mix(in oklch, var(--accent) 8%, var(--bg-1));
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
+  /* Always app-accent regardless of the weather colour the React
+     component would otherwise apply inline. Inline background is
+     suppressed when active (see StagesStrip), so this wins. */
+  border-color: #5BC8F5;
+  background: #5BC8F5 !important;
+  box-shadow: 0 0 0 3px color-mix(in oklch, #5BC8F5 25%, transparent);
 }
+.wx3-stage.active .num,
+.wx3-stage.active .day,
+.wx3-stage.active .place,
+.wx3-stage.active .summary { color: #ffffff; }
+.wx3-stage.active .meta .ic,
+.wx3-stage.active .meta .ic.cool,
+.wx3-stage.active .meta .temp { color: #ffffff; }
 .wx3-stage.climate { opacity: 0.78; filter: saturate(0.6); }
 .wx3-stage .num { font-family: var(--mono); font-size: 9px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.1em; }
 .wx3-stage .day { font-family: var(--mono); font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em; }
