@@ -222,7 +222,7 @@ function NumField({ value, onChange, suffix, min, max }) {
 
 // ── Input cards ─────────────────────────────────────────────────────────────
 
-function EventSetupCard({ inputs, setInputs, savedTours, showDateError }) {
+function EventSetupCard({ inputs, setInputs, savedTours }) {
   const { eventSource, externalEvent, tourEvent } = inputs;
   const setSource = (v) => setInputs({ ...inputs, eventSource: v });
   const setEvent = (patch) =>
@@ -321,9 +321,6 @@ function EventSetupCard({ inputs, setInputs, savedTours, showDateError }) {
                     value={tourEvent.date ?? ""}
                     onChange={(e) => setTour({ date: e.target.value || null })}
                   />
-                  {showDateError && !isFutureOrToday(tourEvent.date) && (
-                    <div className="input-error">Please select a future event date.</div>
-                  )}
                 </div>
               </div>
             )}
@@ -372,9 +369,6 @@ function EventSetupCard({ inputs, setInputs, savedTours, showDateError }) {
                   value={externalEvent.date ?? ""}
                   onChange={(e) => setEvent({ date: e.target.value || null })}
                 />
-                {showDateError && !isFutureOrToday(externalEvent.date) && (
-                  <div className="input-error">Please select a future event date.</div>
-                )}
               </div>
             </div>
           </>
@@ -1657,7 +1651,6 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
           inputs={planInputs}
           setInputs={setPlanInputs}
           savedTours={savedTours}
-          showDateError={submitAttempted && !canGenerate}
         />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
         <InputInfo />
@@ -1688,6 +1681,15 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
         >
           Generate Plan
         </button>
+
+        {submitAttempted && !canGenerate && (() => {
+          const src = planInputs.eventSource;
+          const d = src === "From Tour Planner"
+            ? (planInputs.tourEvent && planInputs.tourEvent.date)
+            : (planInputs.externalEvent && planInputs.externalEvent.date);
+          if (isFutureOrToday(d)) return null;
+          return <div className="gen-error">Please select a future event date.</div>;
+        })()}
 
         {generationError && (
           <div className="gen-error">{generationError}</div>
