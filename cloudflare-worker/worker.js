@@ -116,12 +116,16 @@ export default {
       return jsonResponse(400, { error: "Missing contents array" }, origin);
     }
 
-    // Bound maxOutputTokens so a malicious client can't run up the
-    // bill on huge completions. 1000 is well over what packing tips
-    // ever needs.
-    parsed.generationConfig = parsed.generationConfig || {};
-    const requested = Number(parsed.generationConfig.maxOutputTokens) || 500;
-    parsed.generationConfig.maxOutputTokens = Math.min(requested, 1000);
+    // Server-controlled generationConfig. Overriding the client's
+    // values (rather than just capping maxOutputTokens) means we
+    // always get the JSON mime type back and can't accidentally
+    // overrun the token budget — gemini-2.5-flash was truncating
+    // mid-array at 500 tokens with finishReason: MAX_TOKENS.
+    parsed.generationConfig = {
+      temperature: 0.7,
+      maxOutputTokens: 1024,
+      responseMimeType: "application/json",
+    };
 
     const upstream = await fetch(`${UPSTREAM}?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
       method: "POST",
