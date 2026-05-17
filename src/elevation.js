@@ -33,7 +33,7 @@
 // If alpine routes lose detail (Garmisch under 1000 m), raise σ to 2.5.
 const RESAMPLE_DISTANCE_M = 30;    // points every 30 m along the route
 const GAUSSIAN_SIGMA = 2;          // light Gaussian smoothing
-const MIN_DELTA_METERS = 3;        // ignore wobbles smaller than this
+const MIN_DELTA_METERS = 4;        // ignore wobbles smaller than this
 const DESPIKE_THRESHOLD_M = 25;    // single-sample DEM spikes replaced
                                    // with the neighbor average
 const CHART_POINTS = 200;          // downsampled count for the area chart
