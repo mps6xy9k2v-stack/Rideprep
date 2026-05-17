@@ -106,6 +106,22 @@ const GLOSSARY = [
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
 
+// Local-time "today" as YYYY-MM-DD. Used as the min for every event-date
+// picker so the user can't pick a date in the past, computed at render
+// time so the floor advances with the calendar. UTC-based toISOString()
+// shifts a day in non-UTC timezones near midnight, which is why we
+// build the string manually.
+function todayLocalIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function isFutureOrToday(iso) {
+  return typeof iso === "string" && iso.length >= 10 && iso >= todayLocalIso();
+}
+
 const DEFAULT_INPUTS = {
   eventSource: null,
   externalEvent: { type: null, distance: null, elevation: null, date: null },
@@ -214,7 +230,7 @@ function EventSetupCard({ inputs, setInputs, savedTours }) {
   const setTour = (patch) =>
     setInputs({ ...inputs, tourEvent: { ...tourEvent, ...patch } });
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayLocalIso();
 
   const selectedTour = tourEvent && tourEvent.tourId
     ? savedTours.find((t) => t.id === tourEvent.tourId)
@@ -546,9 +562,11 @@ function isValid(inputs, savedTours = []) {
   if (eventSource === "External Event") {
     if (!externalEvent.type || !externalEvent.distance || !externalEvent.elevation || !externalEvent.date)
       return false;
+    if (!isFutureOrToday(externalEvent.date)) return false;
   }
   if (eventSource === "From Tour Planner") {
     if (!tourEvent || !tourEvent.tourId || !tourEvent.date) return false;
+    if (!isFutureOrToday(tourEvent.date)) return false;
     const tour = savedTours.find((t) => t.id === tourEvent.tourId);
     if (!tour) return false;                         // tour was deleted
     if (!tour.totalKm || !tour.totalAscent) return false; // incomplete tour data
@@ -1481,7 +1499,16 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
 
   const [planInputs, setPlanInputs] = useState(() => {
     const saved = loadJSON(INPUTS_KEY);
-    return saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
+    const merged = saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
+    // Drop any persisted event date that's already in the past so the
+    // user re-picks rather than silently running a plan with stale data.
+    if (merged.externalEvent && !isFutureOrToday(merged.externalEvent.date)) {
+      merged.externalEvent = { ...merged.externalEvent, date: null };
+    }
+    if (merged.tourEvent && !isFutureOrToday(merged.tourEvent.date)) {
+      merged.tourEvent = { ...merged.tourEvent, date: null };
+    }
+    return merged;
   });
   // Live-subscribed to RP_TourStorage so tours saved or deleted from the
   // Tour Planner tab appear here immediately — no reload needed.

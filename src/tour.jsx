@@ -2200,6 +2200,11 @@ function Tour({ tweaks }) {
     setError(null);
     setLoading(true);
     try {
+      // Reject past event dates even when the user typed one directly,
+      // bypassing the input's min attribute.
+      if (startDate && startDate < todayLocalIso()) {
+        throw new Error("Event Start Date can't be in the past — please pick today or a future date.");
+      }
       // Build aligned (text, coord) pairs so we keep dropdown-captured
       // coords with their stop even after empty stops are filtered out.
       const pairs = stops.map((s, i) => ({
