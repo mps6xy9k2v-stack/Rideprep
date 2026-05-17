@@ -41,8 +41,20 @@ function normalizeAddressForId(s) {
   return String(s || "").split(",")[0].trim().toLowerCase();
 }
 
-function tourIdFor(from, to, startDate) {
-  return `${slugify(normalizeAddressForId(from))}_${slugify(normalizeAddressForId(to))}_${startDate || "nodate"}`;
+function tourIdFor(from, to, startDate, mid) {
+  // Intermediate stops join into the ID so a Hamburg → Berlin → München
+  // tour doesn't overwrite a Hamburg → Köln → München tour on the same
+  // date. Empty/whitespace-only entries are dropped; existing tours
+  // saved without a `mid` argument keep the same ID they had before.
+  const midSlug = Array.isArray(mid)
+    ? mid.filter((s) => s && String(s).trim()).map((s) => slugify(normalizeAddressForId(s))).filter(Boolean).join("-")
+    : "";
+  const fromS = slugify(normalizeAddressForId(from));
+  const toS = slugify(normalizeAddressForId(to));
+  const ds = startDate || "nodate";
+  return midSlug
+    ? `${fromS}_via-${midSlug}_${toS}_${ds}`
+    : `${fromS}_${toS}_${ds}`;
 }
 
 // Back-compat shims so existing call sites in this file don't churn.
@@ -82,7 +94,8 @@ function buildTourName(from, to, startDate) {
 function saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, avoidShortFinal }) {
   if (!_TS()) return { ok: false, reason: "no-storage" };
   if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
-  const id = tourIdFor(tour.from, tour.to, startDate);
+  const mid = Array.isArray(stops) && stops.length > 2 ? stops.slice(1, -1) : [];
+  const id = tourIdFor(tour.from, tour.to, startDate, mid);
   const name = buildTourName(tour.from, tour.to, startDate);
   return _TS().saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, avoidShortFinal, id, name });
 }
@@ -121,8 +134,13 @@ function migrateAndDedupeTours() {
     }
     const byNewId = new Map(); // newId -> { meta, blob, oldIds:Set }
     for (const entry of list) {
-      const newId = tourIdFor(entry.from, entry.to, entry.startDate);
+      // Need the blob first to recover any intermediate stops — the
+      // index entry doesn't carry them, so a from/to-only re-key would
+      // collapse multi-stop tours together.
       const oldBlob = readTourBlob(entry.id);
+      const mid = (oldBlob && Array.isArray(oldBlob.stops) && oldBlob.stops.length > 2)
+        ? oldBlob.stops.slice(1, -1) : [];
+      const newId = tourIdFor(entry.from, entry.to, entry.startDate, mid);
       const slot = byNewId.get(newId);
       const candidate = { meta: { ...entry, id: newId }, blob: oldBlob, oldIds: new Set([entry.id]) };
       if (!slot) {
@@ -2150,7 +2168,8 @@ function Tour({ tweaks }) {
   const handleDeleteTour = useCallback((id) => {
     // If we're deleting the currently-loaded tour, reset the planner so
     // the map / itinerary / summary bar don't keep showing stale data.
-    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate);
+    const mid = stops.length > 2 ? stops.slice(1, -1) : [];
+    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate, mid);
     deleteTour(id);
     if (id === currentId) {
       const demo = initialDemo();
@@ -2161,7 +2180,7 @@ function Tour({ tweaks }) {
       setActiveStage(0);
     }
     setSavedTours(readToursIndex());
-  }, [tour, startDate, initialDemo, defaultStops]);
+  }, [tour, startDate, stops, initialDemo, defaultStops]);
 
   const handleClearAllTours = useCallback(() => {
     clearAllSavedTours();
@@ -2300,7 +2319,7 @@ function Tour({ tweaks }) {
         <div className="stack" style={{ gap: 16 }}>
           <SavedToursPanel
             savedTours={savedTours}
-            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate)}
+            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate, stops.length > 2 ? stops.slice(1, -1) : [])}
             onLoad={handleLoadTour}
             onDelete={handleDeleteTour}
             onClearAll={handleClearAllTours}
