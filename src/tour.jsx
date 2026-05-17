@@ -568,7 +568,9 @@ function stageDate(startIso, stageIdx) {
   return d;
 }
 
-const STAGE_DATE_FMT = new Intl.DateTimeFormat(undefined, {
+// Force en-GB so the stage labels read "Wed, 20 May" regardless of the
+// user's browser locale (was producing "Mi, 20. Mai" for German users).
+const STAGE_DATE_FMT = new Intl.DateTimeFormat("en-GB", {
   weekday: "short", month: "short", day: "numeric",
 });
 
