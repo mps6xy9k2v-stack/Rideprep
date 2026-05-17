@@ -1263,7 +1263,7 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearA
   );
 }
 
-function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, avoidShortFinal, setAvoidShortFinal, hasPlannedTour, onPlan, loading, error }) {
+function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, avoidShortFinal, setAvoidShortFinal, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
   const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops, stopCoords);
   const planDisabled = loading || anyInvalid || anyChecking;
@@ -1368,18 +1368,15 @@ function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, 
 
       <label
         className="balance-toggle"
-        title={hasPlannedTour ? "" : "Plan a route first to enable this option"}
         style={{
           display: "flex", alignItems: "center", gap: 10,
           padding: "8px 4px 0", fontSize: 12, color: "var(--fg-dim)",
-          opacity: hasPlannedTour ? 1 : 0.55,
-          cursor: hasPlannedTour ? "pointer" : "not-allowed",
+          cursor: "pointer",
         }}
       >
         <input
           type="checkbox"
           checked={!!avoidShortFinal}
-          disabled={!hasPlannedTour}
           onChange={(e) => setAvoidShortFinal(e.target.checked)}
           style={{ width: 16, height: 16, cursor: "inherit" }}
         />
@@ -2020,23 +2017,6 @@ function Tour({ tweaks }) {
     setAvoidShortFinalState(!!v);
     try { localStorage.setItem("rideprep:avoidShortFinalStage", JSON.stringify(!!v)); } catch {}
   }, []);
-  // Auto re-plan when the user flips the toggle on an already-planned
-  // route. Skip the first render (when the value is just being loaded
-  // from saved state / localStorage and the tour hasn't been planned
-  // in this session yet).
-  const prevAvoidRef = useRef(avoidShortFinal);
-  useEffect(() => {
-    if (prevAvoidRef.current === avoidShortFinal) return;
-    prevAvoidRef.current = avoidShortFinal;
-    if (!window.__ORS_API_KEY__) return;
-    if (!tour || !Array.isArray(tour.stages) || tour.stages.length === 0) return;
-    if (loading) return;
-    planRoute();
-    // planRoute is intentionally omitted from deps — including it would
-    // re-fire on every state change (it changes identity with stops
-    // etc.). We only want this effect to react to the toggle flip.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [avoidShortFinal]);
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
@@ -2340,9 +2320,6 @@ function Tour({ tweaks }) {
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
             avoidShortFinal={avoidShortFinal} setAvoidShortFinal={setAvoidShortFinal}
-            hasPlannedTour={!!(tour && Array.isArray(tour.stages) && tour.stages.length > 0
-                              && Array.isArray(geometry) && geometry.length > 1
-                              && !!window.__ORS_API_KEY__)}
             onPlan={planRoute}
             loading={loading}
             error={error}
