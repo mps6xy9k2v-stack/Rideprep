@@ -129,14 +129,21 @@ async function fetchPackingTips(ctx) {
   const url = proxyUrl
     ? proxyUrl
     : `${ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
+  // TODO: remove once Gemini path is confirmed working end-to-end.
+  // eslint-disable-next-line no-console
+  console.log("[packingTips] POST", url.replace(/key=[^&]+/, "key=***"), "promptLen", body.contents[0].parts[0].text.length);
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  // eslint-disable-next-line no-console
+  console.log("[packingTips] response", res.status, res.statusText);
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.text()).slice(0, 240); } catch {}
+    // eslint-disable-next-line no-console
+    console.warn("[packingTips] non-OK body:", detail);
     throw new Error(`Gemini ${res.status}: ${detail}`);
   }
   const data = await res.json();
@@ -166,5 +173,14 @@ window.RP_PackingTips = {
   fetchPackingTips,
   buildPrompt, MODEL,
 };
+
+// One-shot startup line so we can confirm at a glance whether the
+// proxy URL / direct key actually reached the page.
+// eslint-disable-next-line no-console
+console.log("[packingTips] config", {
+  proxy: window.__PACKING_TIPS_PROXY_URL__ || "(none)",
+  hasKey: !!window.__GEMINI_API_KEY__,
+  model: MODEL,
+});
 
 })();

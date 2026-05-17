@@ -1131,15 +1131,23 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
   // Skips entirely if no API key — the local fallback is shown instead.
   useEffect(() => {
     const RP = window.RP_PackingTips;
+    // eslint-disable-next-line no-console
+    console.log("[packingTips] card effect", {
+      hasCtx: !!ctx, hasKey: !!key, hasRP: !!RP,
+      apiReady: !!(window.__PACKING_TIPS_PROXY_URL__ || window.__GEMINI_API_KEY__),
+    });
     if (!ctx || !key || !RP) return;
     const cached = RP.readCache(key);
     if (cached && Array.isArray(cached.tips) && cached.tips.length) {
+      // eslint-disable-next-line no-console
+      console.log("[packingTips] using cached tips", cached.tips.length);
       setAiTips(cached.tips);
       setErrorMsg(null);
       return;
     }
     if (!(window.__PACKING_TIPS_PROXY_URL__ || window.__GEMINI_API_KEY__)) {
-      // Silent — the local fallback already renders.
+      // eslint-disable-next-line no-console
+      console.log("[packingTips] no API configured, showing local fallback");
       setAiTips(null);
       setErrorMsg(null);
       return;
@@ -1147,6 +1155,8 @@ function PackingTipsCard({ stop, stopIdx, entry, tour, training, startCoord }) {
     let cancelled = false;
     setLoading(true);
     setErrorMsg(null);
+    // eslint-disable-next-line no-console
+    console.log("[packingTips] firing fetchPackingTips for stage", stopIdx);
     RP.fetchPackingTips(ctx)
       .then((tips) => {
         if (cancelled) return;
