@@ -134,21 +134,16 @@ async function fetchPackingTips(ctx) {
   const url = proxyUrl
     ? proxyUrl
     : `${ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
-  // TODO: remove once Gemini path is confirmed working end-to-end.
-  // eslint-disable-next-line no-console
-  console.log("[packingTips] POST", url.replace(/key=[^&]+/, "key=***"), "promptLen", body.contents[0].parts[0].text.length);
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  // eslint-disable-next-line no-console
-  console.log("[packingTips] response", res.status, res.statusText);
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.text()).slice(0, 240); } catch {}
     // eslint-disable-next-line no-console
-    console.warn("[packingTips] non-OK body:", detail);
+    console.warn("[packingTips] non-OK response:", res.status, detail);
     throw new Error(`Gemini ${res.status}: ${detail}`);
   }
   const data = await res.json();
@@ -159,16 +154,6 @@ async function fetchPackingTips(ctx) {
     (data && data.candidates && data.candidates[0] &&
      data.candidates[0].content && data.candidates[0].content.parts) || [];
   const text = parts.map((p) => (p && p.text) || "").join("");
-
-  // eslint-disable-next-line no-console
-  console.log("[packingTips] full data.candidates[0]:", JSON.stringify(data && data.candidates && data.candidates[0]));
-  // eslint-disable-next-line no-console
-  console.log("[packingTips] full response parts count:", parts.length);
-  // eslint-disable-next-line no-console
-  console.log("[packingTips] raw response text FULL:", text);
-  // eslint-disable-next-line no-console
-  console.log("[packingTips] raw response length:", text.length);
-
   const tips = parseGeminiResponse(text);
   if (!tips.length) throw new Error("Response was not a JSON array of strings");
   return tips.slice(0, 7);
@@ -218,28 +203,5 @@ console.log("[packingTips] config", {
   model: MODEL,
 });
 
-// One-shot probe: list the models this API key can actually use, so
-// "model not found" failures become obvious. Uses the proxy (the
-// worker exposes the models list on GET) when configured; otherwise
-// hits Google directly with the raw key. Skipped if neither is set.
-(function listModels() {
-  const proxyUrl = window.__PACKING_TIPS_PROXY_URL__;
-  const apiKey = window.__GEMINI_API_KEY__;
-  if (!proxyUrl && !apiKey) return;
-  const url = proxyUrl
-    ? proxyUrl
-    : `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-  fetch(url, { method: "GET" })
-    .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-    .then((data) => {
-      const names = (data && data.models || []).map((m) => m.name);
-      // eslint-disable-next-line no-console
-      console.log("[packingTips] available models:", names);
-    })
-    .catch((e) => {
-      // eslint-disable-next-line no-console
-      console.warn("[packingTips] could not list models:", e && e.message ? e.message : e);
-    });
-})();
 
 })();
