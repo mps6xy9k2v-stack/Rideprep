@@ -209,13 +209,15 @@ function _pickBestGeocodeFeature(features) {
 }
 
 async function orsGeocode(query, key) {
-  // size=5 + layers filter so we get a few city-like candidates and pick
-  // the strongest one. Restricting to locality/localadmin keeps Pelias
-  // from returning a street or venue when the user typed a city name.
+  // size=5 so we have a few candidates for _pickBestGeocodeFeature. No
+  // layers filter — the dropdown path already uses Nominatim coords
+  // directly for cities, so this code path mostly serves Germany-only
+  // validation and the rare free-typed stop (which may be a street
+  // address, not a city). Restricting to locality here would reject
+  // valid addresses and break manual input.
   const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}`
     + `&text=${encodeURIComponent(query)}`
     + `&size=5`
-    + `&layers=locality,localadmin,borough`
     + `&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Geocoding failed: ${r.status}`);
@@ -596,17 +598,13 @@ const DE_STATE_ABBR = {
 };
 
 // POI / non-place classes Nominatim returns. We never want a tour to
-// start at a restaurant or a building. The earlier allowlist
-// (`class === "place"` with strict types) rejected legitimate cities
-// because OSM tagging is inconsistent — a city-state like Hamburg
-// comes back as boundary/administrative, a village like Bad Laer as
-// place/village, a municipality like Stuhr as boundary/administrative
-// with admin_level=8. A denylist of POI classes plus a permissive
-// addresstype fallback covers all of those without dropping real
-// settlements.
+// start at a restaurant or a building. Streets (class=highway) and
+// individual houses (addresstype=house, class=place type=house) are
+// allowed so the planner accepts a full street address as a stop,
+// not only city names.
 const _NOM_REJECTED_CLASSES = new Set([
   "amenity", "shop", "tourism", "leisure", "office",
-  "highway", "building", "historic", "natural", "landuse",
+  "historic", "natural", "landuse",
   "man_made", "waterway", "railway", "aeroway", "barrier",
   "craft", "emergency", "military",
 ]);
@@ -614,20 +612,38 @@ const _NOM_CITY_LIKE_ADDRESS_TYPES = new Set([
   "city", "town", "village", "municipality", "hamlet",
   "suburb", "borough", "quarter",
 ]);
+const _NOM_ADDRESS_LIKE_ADDRESS_TYPES = new Set([
+  "house", "building", "road", "postcode",
+]);
 
-function _isCityLike(r) {
+function _isPlaceLike(r) {
+  // Settlement: city, town, village, municipality, hamlet, suburb, borough.
   if (!r) return false;
   const cls = r.class;
   const type = r.type;
-  if (_NOM_REJECTED_CLASSES.has(cls)) return false;
-  // Anything explicitly tagged as a place is a populated place.
-  if (cls === "place") return true;
-  // Administrative boundaries cover cities, towns, districts.
+  if (cls === "place" && type !== "house") return true;
   if (cls === "boundary" && type === "administrative") return true;
-  // Fallback: trust Nominatim's addresstype when it labels the result
-  // as a populated place. Catches city-states and edge tagging.
   if (r.addresstype && _NOM_CITY_LIKE_ADDRESS_TYPES.has(r.addresstype)) return true;
   return false;
+}
+function _isAddressLike(r) {
+  // Street or specific address (house number, building, postcode).
+  if (!r) return false;
+  const cls = r.class;
+  const type = r.type;
+  if (cls === "highway") return true;
+  if (cls === "building") return true;
+  if (cls === "place" && type === "house") return true;
+  if (r.addresstype && _NOM_ADDRESS_LIKE_ADDRESS_TYPES.has(r.addresstype)) return true;
+  return false;
+}
+function _isCityLike(r) {
+  // Kept for back-compat with existing callers / logs. Now means
+  // "a valid destination" — settlement OR street address — and still
+  // rejects POIs like restaurants and shops.
+  if (!r) return false;
+  if (_NOM_REJECTED_CLASSES.has(r.class)) return false;
+  return _isPlaceLike(r) || _isAddressLike(r);
 }
 
 // Ranking helpers used by nominatimSearch to choose the *best* OSM
@@ -646,6 +662,10 @@ function _placeRank(item) {
     return _PLACE_TYPE_RANK[item.type];
   }
   if (item.class === "boundary" && item.type === "administrative") return 10;
+  // Street addresses rank below settlements so a city wins when both
+  // match the same query — but they still rank above the catch-all so
+  // a pure address query (no settlement hit) surfaces them.
+  if (_isAddressLike(item)) return 15;
   return 20;
 }
 // Prefer node > way > relation. Nodes/ways are tagged on the populated
@@ -676,10 +696,27 @@ function _debugAc(...args) {
 }
 
 function _formatSuggestion(r) {
-  const name = r.address.city || r.address.town || r.address.village
-             || r.address.municipality || r.address.hamlet || r.address.suburb
+  // Street address / house number / postcode: show the leading segments
+  // of the display name (street, city, postcode) so the user can tell
+  // apart, e.g., two different "Hauptstraße 1" in different cities.
+  if (_isAddressLike(r)) {
+    const a = r.address || {};
+    const street = a.road || a.pedestrian || a.footway || a.cycleway || r.name;
+    const house = a.house_number ? ` ${a.house_number}` : "";
+    const postcode = a.postcode ? `${a.postcode} ` : "";
+    const town = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || "";
+    const head = street ? `${street}${house}` : (r.name || "");
+    const tail = [postcode + town, "Deutschland"].filter(Boolean).join(", ");
+    if (head && tail) return `${head}, ${tail}`;
+    // Fallback: take the first 4 comma-separated parts of display_name.
+    return String(r.display_name || "").split(",").slice(0, 4).map((s) => s.trim()).filter(Boolean).join(", ");
+  }
+  // Settlement (city / town / village / boundary).
+  const a = r.address || {};
+  const name = a.city || a.town || a.village
+             || a.municipality || a.hamlet || a.suburb
              || r.name;
-  const rawCode = r.address.state_code || DE_STATE_ABBR[r.address.state] || "";
+  const rawCode = a.state_code || DE_STATE_ABBR[a.state] || "";
   const state = rawCode.replace(/^DE-/i, "").substring(0, 4);
   return state ? `${name}, ${state}, Deutschland` : `${name}, Deutschland`;
 }
@@ -938,7 +975,7 @@ function StopMarker({ kind }) {
 //   anyInvalid     -> at least one stop has an error (planning disabled)
 //   anyChecking    -> at least one stop is mid-flight (planning disabled)
 const GEOCODE_VALIDATION_CACHE = new Map();
-function useStopValidation(stops) {
+function useStopValidation(stops, stopCoords) {
   const [stopErrors, setStopErrors] = useState({});
   const [stopChecking, setStopChecking] = useState({});
 
@@ -957,6 +994,13 @@ function useStopValidation(stops) {
     stops.forEach((stop, i) => {
       const q = String(stop || "").trim();
       if (!q) {
+        setStopErrors((prev) => ({ ...prev, [i]: null }));
+        return;
+      }
+      // The user picked from the Nominatim dropdown — we already have a
+      // valid German coord, no need to round-trip through Pelias
+      // (which would reject street addresses with our city-only layers).
+      if (stopCoords && stopCoords[i]) {
         setStopErrors((prev) => ({ ...prev, [i]: null }));
         return;
       }
@@ -992,7 +1036,7 @@ function useStopValidation(stops) {
       handles.forEach(clearTimeout);
       cancellers.forEach((c) => c());
     };
-  }, [stops.join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops.join("|"), (stopCoords || []).map((c) => c ? "y" : "n").join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const anyInvalid = stops.some((s, i) => s.trim() && stopErrors[i]);
   const anyChecking = Object.values(stopChecking).some(Boolean);
@@ -1175,9 +1219,9 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearA
   );
 }
 
-function TourForm({ stops, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
+function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
-  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
+  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops, stopCoords);
   const planDisabled = loading || anyInvalid || anyChecking;
   return (
     <div className="card stack" style={{ gap: 14 }}>
@@ -2192,7 +2236,8 @@ function Tour({ tweaks }) {
             </div>
           )}
           <TourForm
-            stops={stops} setStop={setStop} setStopFromSuggestion={setStopFromSuggestion}
+            stops={stops} stopCoords={stopCoords}
+            setStop={setStop} setStopFromSuggestion={setStopFromSuggestion}
             addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
