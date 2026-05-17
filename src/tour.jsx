@@ -787,6 +787,30 @@ function _formatSuggestion(r) {
 
 const _nomCache = new Map();
 
+// Fetch Nominatim once with the given accept-language hint. Returns
+// the parsed array or null on HTTP / network failure (so the caller
+// can decide whether to retry / fall back instead of caching the
+// failure as "no results").
+async function _nominatimFetch(q, lang) {
+  const params = new URLSearchParams({
+    q,
+    countrycodes: "de",
+    addressdetails: "1",
+    limit: "15",
+    format: "jsonv2",
+    "accept-language": lang,
+  });
+  const url = `https://nominatim.openstreetmap.org/search?${params}`;
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Rideprep/1.0 (contact@rideprep.app)" },
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return Array.isArray(data) ? data : null;
+  } catch { return null; }
+}
+
 async function nominatimSearch(query) {
   const q = query.trim();
   if (q.length < 2) return [];
@@ -796,42 +820,28 @@ async function nominatimSearch(query) {
     return _nomCache.get(cacheKey);
   }
 
-  // No `featuretype` — too restrictive against OSM's inconsistent
-  // tagging. We filter to settlements client-side via _isCityLike()
-  // which fails open (accepts anything that isn't a known POI class).
-  const params = new URLSearchParams({
-    q,
-    countrycodes: "de",
-    addressdetails: "1",
-    limit: "15",
-    format: "jsonv2",
-    "accept-language": "en",
-  });
-  const url = `https://nominatim.openstreetmap.org/search?${params}`;
-  _debugAc("debounced query firing:", q);
-  _debugAc("request URL:", url);
-  // Note: browsers strip the User-Agent header silently — Nominatim
-  // logs the default browser UA instead. That's acceptable for the
-  // public endpoint at our scale.
-  const r = await fetch(url, {
-    headers: { "User-Agent": "Rideprep/1.0 (contact@rideprep.app)" },
-  });
-  _debugAc("response status:", r.status);
-  if (!r.ok) throw new Error(`Nominatim ${r.status}`);
-  // TODO: remove once partial-input behaviour is understood. Logs the
-  // raw Nominatim response per debounced query so we can see whether
-  // "Hambu" returns zero results from the server or our filter drops
-  // matches.
-  // eslint-disable-next-line no-console
-  console.log("[autocomplete] query:", q);
-
-  const data = await r.json();
-  _debugAc("results count from Nominatim:", Array.isArray(data) ? data.length : "(non-array)");
-  if (Array.isArray(data) && data.length > 0) {
-    _debugAc("sample result[0]:", data[0]);
+  // Try English first (matches the rest of the UI). If Nominatim
+  // returns null (transient HTTP failure, rate-limit) or zero hits,
+  // fall back to German once — German names like "Hamburg" /
+  // "München" index slightly differently and an English-only hint
+  // can occasionally return zero on partial queries. Negative
+  // results are NOT cached so the next keystroke / debounce can
+  // retry rather than getting stuck on a stale empty.
+  let data = await _nominatimFetch(q, "en");
+  let usedFallback = false;
+  if (!data || data.length === 0) {
+    const de = await _nominatimFetch(q, "de");
+    if (de && de.length) {
+      data = de;
+      usedFallback = true;
+    } else if (!data) {
+      data = []; // both attempts failed at the network layer
+    }
   }
   // eslint-disable-next-line no-console
-  console.log("[autocomplete] raw results:", (Array.isArray(data) ? data : []).map((d) => ({
+  console.log("[autocomplete] query:", q, "results:", data.length, usedFallback ? "(de fallback)" : "");
+  // eslint-disable-next-line no-console
+  console.log("[autocomplete] raw results:", data.map((d) => ({
     name: d.display_name && d.display_name.split(",")[0],
     class: d.class, type: d.type, osm_type: d.osm_type, addresstype: d.addresstype,
     importance: d.importance, isCityLike: _isCityLike(d),
@@ -889,7 +899,10 @@ async function nominatimSearch(query) {
   _debugAc("filter rejected sample:", rejectedSample);
   _debugAc("filter accepted sample:", acceptedSample);
   _debugAc("top candidate:", items[0]);
-  _nomCache.set(cacheKey, items);
+  // Only cache positive results. Caching an empty array meant a single
+  // rate-limit blip or transient failure on "hambu" stuck the user on
+  // "No German city found." until they reloaded.
+  if (items.length) _nomCache.set(cacheKey, items);
   return items;
 }
 
