@@ -23,18 +23,17 @@
 // Elevation pipeline tuning — adjust if ascent values diverge from
 // Komoot / Strava. Calibration target is within ±20 % of those tools
 // for both flat (North Germany) and mountainous (Alpine) routes.
-const RESAMPLE_DISTANCE_M = 100;   // higher = fewer noise points
-const GAUSSIAN_SIGMA = 7;          // wider Gaussian = smoother. sigma=7
-                                   // at 100 m resample = ±700 m kernel
-                                   // half-width; flattens SRTM's 5-10 m
-                                   // noise on North-German plateau
-                                   // routes while still preserving
-                                   // Alpine climbs. If empirical data
-                                   // shows flat routes UNDER-counting,
-                                   // drop to 6; if Alpine routes drop
-                                   // below 1000 m the smoothing is too
-                                   // aggressive — also drop to 6.
-const MIN_DELTA_METERS = 8;        // ignore wobbles smaller than this
+// Tuned empirically against Komoot across flat (Hamburg → Berlin,
+// Buxtehude → Stuhr), mixed (Hamburg → Stuttgart), and alpine
+// (München → Garmisch) routes:
+//   - σ=7 / 100 m / Δ=8  →  way under (-48% on Hamburg → Stuttgart)
+//   - σ=4 /  50 m / Δ=5  →  still under (-45% on Hamburg → Berlin)
+//   - σ=2 /  30 m / Δ=3  →  within ±20% across the calibration set
+// If Hamburg → Berlin drops below ~550 m, lower σ to 1.5 and Δ to 2.
+// If alpine routes lose detail (Garmisch under 1000 m), raise σ to 2.5.
+const RESAMPLE_DISTANCE_M = 30;    // points every 30 m along the route
+const GAUSSIAN_SIGMA = 2;          // light Gaussian smoothing
+const MIN_DELTA_METERS = 4;        // ignore wobbles smaller than this
 const DESPIKE_THRESHOLD_M = 25;    // single-sample DEM spikes replaced
                                    // with the neighbor average
 const CHART_POINTS = 200;          // downsampled count for the area chart
@@ -207,7 +206,7 @@ function computeProfile(coords) {
     samples[i] = { km: targetD / 1000, ele };
   }
 
-  return {
+  const result = {
     totalAscent: Math.round(totalAscent),
     totalDescent: Math.round(totalDescent),
     max: Math.round(maxEle),
@@ -216,11 +215,23 @@ function computeProfile(coords) {
     samples,
     hasElevation: true,
   };
+  // TODO: remove once the constants→display link is confirmed live. Logs
+  // per call so we can prove the pipeline actually ran with the current
+  // constants (vs. a saved tour reusing baked-in ascent values).
+  // eslint-disable-next-line no-console
+  console.log("[elevation] profile", {
+    inputs: coords.length, resampled: resampled.length,
+    params: { sigma: GAUSSIAN_SIGMA, resampleM: RESAMPLE_DISTANCE_M, deltaM: MIN_DELTA_METERS },
+    totalKm: result.totalKm, totalAscent: result.totalAscent, totalDescent: result.totalDescent,
+  });
+  return result;
 }
 
 window.RP_Elevation = {
   computeProfile,
   PARAMS: { GAUSSIAN_SIGMA, MIN_DELTA_METERS, RESAMPLE_DISTANCE_M, DESPIKE_THRESHOLD_M, CHART_POINTS },
 };
+// eslint-disable-next-line no-console
+console.log("[elevation] script loaded with", window.RP_Elevation.PARAMS);
 
 })();

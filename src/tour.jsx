@@ -41,8 +41,20 @@ function normalizeAddressForId(s) {
   return String(s || "").split(",")[0].trim().toLowerCase();
 }
 
-function tourIdFor(from, to, startDate) {
-  return `${slugify(normalizeAddressForId(from))}_${slugify(normalizeAddressForId(to))}_${startDate || "nodate"}`;
+function tourIdFor(from, to, startDate, mid) {
+  // Intermediate stops join into the ID so a Hamburg → Berlin → München
+  // tour doesn't overwrite a Hamburg → Köln → München tour on the same
+  // date. Empty/whitespace-only entries are dropped; existing tours
+  // saved without a `mid` argument keep the same ID they had before.
+  const midSlug = Array.isArray(mid)
+    ? mid.filter((s) => s && String(s).trim()).map((s) => slugify(normalizeAddressForId(s))).filter(Boolean).join("-")
+    : "";
+  const fromS = slugify(normalizeAddressForId(from));
+  const toS = slugify(normalizeAddressForId(to));
+  const ds = startDate || "nodate";
+  return midSlug
+    ? `${fromS}_via-${midSlug}_${toS}_${ds}`
+    : `${fromS}_${toS}_${ds}`;
 }
 
 // Back-compat shims so existing call sites in this file don't churn.
@@ -79,12 +91,13 @@ function buildTourName(from, to, startDate) {
 // derived ID and display name (which the storage layer doesn't know
 // how to compute). Returns the same { ok, reason?, id } envelope so
 // callers can surface quota errors.
-function saveTour({ tour, geometry, stops, dailyKm, startDate }) {
+function saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, avoidShortFinal }) {
   if (!_TS()) return { ok: false, reason: "no-storage" };
   if (!tour || !tour.from || !tour.to) return { ok: false, reason: "invalid" };
-  const id = tourIdFor(tour.from, tour.to, startDate);
+  const mid = Array.isArray(stops) && stops.length > 2 ? stops.slice(1, -1) : [];
+  const id = tourIdFor(tour.from, tour.to, startDate, mid);
   const name = buildTourName(tour.from, tour.to, startDate);
-  return _TS().saveTour({ tour, geometry, stops, dailyKm, startDate, id, name });
+  return _TS().saveTour({ tour, geometry, stops, stopCoords, dailyKm, startDate, avoidShortFinal, id, name });
 }
 
 function deleteTour(id) {
@@ -121,8 +134,13 @@ function migrateAndDedupeTours() {
     }
     const byNewId = new Map(); // newId -> { meta, blob, oldIds:Set }
     for (const entry of list) {
-      const newId = tourIdFor(entry.from, entry.to, entry.startDate);
+      // Need the blob first to recover any intermediate stops — the
+      // index entry doesn't carry them, so a from/to-only re-key would
+      // collapse multi-stop tours together.
       const oldBlob = readTourBlob(entry.id);
+      const mid = (oldBlob && Array.isArray(oldBlob.stops) && oldBlob.stops.length > 2)
+        ? oldBlob.stops.slice(1, -1) : [];
+      const newId = tourIdFor(entry.from, entry.to, entry.startDate, mid);
       const slot = byNewId.get(newId);
       const candidate = { meta: { ...entry, id: newId }, blob: oldBlob, oldIds: new Set([entry.id]) };
       if (!slot) {
@@ -179,12 +197,59 @@ const ORS_BASE = "https://api.openrouteservice.org";
 const COUNTRY_CODE_ALPHA3 = "DEU";
 const GERMANY_ONLY_MSG = "Rideprep currently supports only addresses in Germany. Please enter a German location.";
 
+// Pelias layer ranking for "what does the user mean when they type a
+// city name". Locality / localadmin (admin level 8 in Germany) are the
+// actual city/town centres; lower-ranked layers are streets, venues,
+// or addresses that often land on the wrong side of town.
+const _ORS_LAYER_RANK = {
+  locality: 0,
+  localadmin: 1,
+  borough: 2,
+  neighbourhood: 3,
+  macrocounty: 4,
+  county: 5,
+  region: 6,
+  macroregion: 7,
+};
+
+function _pickBestGeocodeFeature(features) {
+  if (!features || !features.length) return null;
+  // Score = layer rank (lower better) then -confidence (higher better).
+  const scored = features.map((f) => {
+    const p = f.properties || {};
+    const layer = p.layer || "";
+    const rank = _ORS_LAYER_RANK[layer];
+    const conf = typeof p.confidence === "number" ? p.confidence : 0;
+    return { f, rank: rank == null ? 99 : rank, conf };
+  });
+  scored.sort((a, b) => (a.rank - b.rank) || (b.conf - a.conf));
+  return scored[0].f;
+}
+
 async function orsGeocode(query, key) {
-  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(query)}&size=1&boundary.country=${COUNTRY_CODE_ALPHA3}`;
+  // size=5 so we have a few candidates for _pickBestGeocodeFeature. No
+  // layers filter — the dropdown path already uses Nominatim coords
+  // directly for cities, so this code path mostly serves Germany-only
+  // validation and the rare free-typed stop (which may be a street
+  // address, not a city). Restricting to locality here would reject
+  // valid addresses and break manual input.
+  const url = `${ORS_BASE}/geocode/search?api_key=${encodeURIComponent(key)}`
+    + `&text=${encodeURIComponent(query)}`
+    + `&size=5`
+    + `&boundary.country=${COUNTRY_CODE_ALPHA3}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Geocoding failed: ${r.status}`);
   const j = await r.json();
-  const f = j.features && j.features[0];
+  // TODO: remove once verified — surfaces the candidate list so we can
+  // confirm the chosen feature is the city centre.
+  // eslint-disable-next-line no-console
+  console.log("[geocoder]", query, (j.features || []).map((f) => ({
+    label: f.properties && f.properties.label,
+    layer: f.properties && f.properties.layer,
+    confidence: f.properties && f.properties.confidence,
+    coords: f.geometry && f.geometry.coordinates,
+  })));
+  const f = _pickBestGeocodeFeature(j.features);
   if (!f) throw new Error(GERMANY_ONLY_MSG);
   // Belt-and-braces: ORS may occasionally fuzz the filter; reject any
   // result whose country code isn't DE / Germany.
@@ -194,6 +259,8 @@ async function orsGeocode(query, key) {
   if (cc && cc !== "DEU" && cc !== "DE") throw new Error(GERMANY_ONLY_MSG);
   if (!cc && cn && cn !== "germany" && cn !== "deutschland") throw new Error(GERMANY_ONLY_MSG);
   const [lng, lat] = f.geometry.coordinates;
+  // eslint-disable-next-line no-console
+  console.log("[geocoder] picked", query, "->", { lng, lat, label: props.label, layer: props.layer });
   return { lng, lat, label: props.label };
 }
 
@@ -209,6 +276,11 @@ async function orsReverse(lat, lng, key) {
 
 async function orsDirections(waypoints, key) {
   const url = `${ORS_BASE}/v2/directions/cycling-regular/geojson`;
+  // 2 km snap radius per waypoint: large enough to find a routable
+  // cycle path from any reasonable town-centre point, small enough to
+  // keep ORS from snapping to a path next to a sewage plant on the
+  // outskirts (Kläranlage Bad Laer was the original symptom).
+  const SNAP_RADIUS_M = 2000;
   const r = await fetch(url, {
     method: "POST",
     headers: {
@@ -218,6 +290,7 @@ async function orsDirections(waypoints, key) {
     },
     body: JSON.stringify({
       coordinates: waypoints.map((w) => [w.lng, w.lat]),
+      radiuses: waypoints.map(() => SNAP_RADIUS_M),
       elevation: true,
       instructions: false,
     }),
@@ -245,18 +318,53 @@ function distMeters(a, b) {
 // Ascent/descent are NOT computed inline — that happens in the second pass
 // below via the shared RP_Elevation pipeline so the card, the modal, and
 // the summary bar all see the same numbers.
-async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
+//
+// opts.avoidShortFinal: when true, drop the last sub-dailyKm stage and
+// redistribute its distance evenly across the remaining stages, as long
+// as no resulting stage exceeds dailyKm + SHORT_STAGE_MAX_OVERSHOOT_KM.
+const SHORT_STAGE_THRESHOLD_KM = 30;
+const SHORT_STAGE_MAX_OVERSHOOT_KM = 20;
+async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key, opts) {
+  const avoidShortFinal = !!(opts && opts.avoidShortFinal);
   const dailyM = dailyKm * 1000;
+  // Pre-compute each segment length so we can both pick the stage count
+  // and walk the splits without measuring twice.
+  const segDists = new Array(Math.max(0, coords.length - 1));
+  let totalDist = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const seg = distMeters(coords[i - 1], coords[i]);
+    segDists[i - 1] = seg;
+    totalDist += seg;
+  }
+
+  // Default behaviour: ceil(total / daily) stages, walking at the
+  // exact daily target. The final stage absorbs whatever's left, which
+  // can be tiny — the avoidShortFinal branch below handles that case.
+  let numStages = Math.max(1, Math.ceil(totalDist / dailyM));
+  let effectiveDailyM = dailyM;
+  let mergeApplied = false;
+  if (avoidShortFinal && numStages > 1) {
+    const tentative = Math.floor(totalDist / dailyM);
+    const lastStageM = totalDist - tentative * dailyM;
+    if (tentative >= 1 && lastStageM < SHORT_STAGE_THRESHOLD_KM * 1000) {
+      const newPerStageM = totalDist / tentative;
+      const overshootM = newPerStageM - dailyM;
+      if (overshootM <= SHORT_STAGE_MAX_OVERSHOOT_KM * 1000) {
+        numStages = tentative;
+        effectiveDailyM = newPerStageM;
+        mergeApplied = true;
+      }
+    }
+  }
+
   const stages = [];
   let stageStart = 0;
   let stageCum = 0;
-  let totalDist = 0;
-
   for (let i = 1; i < coords.length; i++) {
-    const seg = distMeters(coords[i - 1], coords[i]);
-    stageCum += seg;
-    totalDist += seg;
-    if (stageCum >= dailyM && i < coords.length - 1) {
+    stageCum += segDists[i - 1];
+    // Commit a stage only if we still have intermediates to make and
+    // we're not at the very last coord (which the final stage owns).
+    if (stages.length < numStages - 1 && stageCum >= effectiveDailyM && i < coords.length - 1) {
       stages.push({ startIdx: stageStart, endIdx: i, km: stageCum / 1000 });
       stageStart = i;
       stageCum = 0;
@@ -299,13 +407,13 @@ async function splitIntoStages(coords, dailyKm, fromLabel, toLabel, key) {
     return stage;
   });
 
-  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent };
+  return { stages: built, totalKm: Math.round(totalDist / 1000), totalAscent, mergeApplied };
 }
 
 // Split a multi-waypoint route into daily stages, leg by leg.
 // `wayPointIdx` is the array of coord indices that ORS returns under
 // `properties.way_points` — one entry per requested waypoint.
-async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key) {
+async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key, opts) {
   const allStages = [];
   let totalKm = 0;
   let totalAscent = 0;
@@ -317,7 +425,7 @@ async function buildItinerary(coords, wayPointIdx, dailyKm, stopLabels, key) {
     if (segCoords.length < 2) continue;
 
     const split = await splitIntoStages(
-      segCoords, dailyKm, stopLabels[leg], stopLabels[leg + 1], key
+      segCoords, dailyKm, stopLabels[leg], stopLabels[leg + 1], key, opts
     );
 
     // Re-base stage indices to be relative to the full coords array.
@@ -445,7 +553,7 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
       "></div>`;
       const icon = L.divIcon({ className: "rp-marker", html, iconSize: [20, 20], iconAnchor: [10, 10] });
       const m = L.marker(ll, { icon }).addTo(map);
-      m.bindPopup(`<strong>${s.to}</strong><br/>Stage ${i + 1} · ${s.km} km · ${s.ascent} m ascent`);
+      m.bindPopup(`<strong>${cityShortLabel(s.to)}</strong><br/>Stage ${i + 1} · ${s.km} km · ${s.ascent} m ascent`);
       m.on("click", () => onPickStage && onPickStage(i));
       layersRef.current.markers.push(m);
     });
@@ -460,7 +568,7 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
       "></div>`;
       const icon = L.divIcon({ className: "rp-marker", html, iconSize: [20, 20], iconAnchor: [10, 10] });
       const m = L.marker(start, { icon }).addTo(map);
-      m.bindPopup(`<strong>${tour.from || "Start"}</strong>`);
+      m.bindPopup(`<strong>${cityShortLabel(tour.from) || "Start"}</strong>`);
       layersRef.current.markers.push(m);
     }
   }, [tour, geometry, activeStage, onPickStage]);
@@ -484,7 +592,7 @@ function TourMap({ tour, geometry, mapStyle, activeStage, onPickStage }) {
       <div ref={elRef} style={{ width: "100%", height: "100%" }} />
       <div className="map-overlay">
         <span className="dot" />
-        <span>{tour.from || "—"} → {tour.to || "—"}</span>
+        <span>{cityShortLabel(tour.from) || "—"} → {cityShortLabel(tour.to) || "—"}</span>
       </div>
       <div className="map-legend">
         <span className="city">Stage end</span>
@@ -515,7 +623,9 @@ function stageDate(startIso, stageIdx) {
   return d;
 }
 
-const STAGE_DATE_FMT = new Intl.DateTimeFormat(undefined, {
+// Force en-GB so the stage labels read "Wed, 20 May" regardless of the
+// user's browser locale (was producing "Mi, 20. Mai" for German users).
+const STAGE_DATE_FMT = new Intl.DateTimeFormat("en-GB", {
   weekday: "short", month: "short", day: "numeric",
 });
 
@@ -540,18 +650,24 @@ const DE_STATE_ABBR = {
   "Thuringia": "TH", "Thüringen": "TH",
 };
 
+// English state names keyed by the abbreviation we resolve to.
+const DE_STATE_NAME_EN = {
+  BW: "Baden-Württemberg", BY: "Bavaria", BE: "Berlin",
+  BB: "Brandenburg", HB: "Bremen", HH: "Hamburg",
+  HE: "Hesse", NI: "Lower Saxony", MV: "Mecklenburg-Vorpommern",
+  NW: "North Rhine-Westphalia", RP: "Rhineland-Palatinate",
+  SL: "Saarland", SN: "Saxony", ST: "Saxony-Anhalt",
+  SH: "Schleswig-Holstein", TH: "Thuringia",
+};
+
 // POI / non-place classes Nominatim returns. We never want a tour to
-// start at a restaurant or a building. The earlier allowlist
-// (`class === "place"` with strict types) rejected legitimate cities
-// because OSM tagging is inconsistent — a city-state like Hamburg
-// comes back as boundary/administrative, a village like Bad Laer as
-// place/village, a municipality like Stuhr as boundary/administrative
-// with admin_level=8. A denylist of POI classes plus a permissive
-// addresstype fallback covers all of those without dropping real
-// settlements.
+// start at a restaurant or a building. Streets (class=highway) and
+// individual houses (addresstype=house, class=place type=house) are
+// allowed so the planner accepts a full street address as a stop,
+// not only city names.
 const _NOM_REJECTED_CLASSES = new Set([
   "amenity", "shop", "tourism", "leisure", "office",
-  "highway", "building", "historic", "natural", "landuse",
+  "historic", "natural", "landuse",
   "man_made", "waterway", "railway", "aeroway", "barrier",
   "craft", "emergency", "military",
 ]);
@@ -559,20 +675,81 @@ const _NOM_CITY_LIKE_ADDRESS_TYPES = new Set([
   "city", "town", "village", "municipality", "hamlet",
   "suburb", "borough", "quarter",
 ]);
+const _NOM_ADDRESS_LIKE_ADDRESS_TYPES = new Set([
+  "house", "building", "road", "postcode",
+]);
 
-function _isCityLike(r) {
+function _isPlaceLike(r) {
+  // Settlement: city, town, village, municipality, hamlet, suburb, borough.
   if (!r) return false;
   const cls = r.class;
   const type = r.type;
-  if (_NOM_REJECTED_CLASSES.has(cls)) return false;
-  // Anything explicitly tagged as a place is a populated place.
-  if (cls === "place") return true;
-  // Administrative boundaries cover cities, towns, districts.
+  if (cls === "place" && type !== "house") return true;
   if (cls === "boundary" && type === "administrative") return true;
-  // Fallback: trust Nominatim's addresstype when it labels the result
-  // as a populated place. Catches city-states and edge tagging.
   if (r.addresstype && _NOM_CITY_LIKE_ADDRESS_TYPES.has(r.addresstype)) return true;
   return false;
+}
+function _isAddressLike(r) {
+  // Street or specific address (house number, building, postcode).
+  if (!r) return false;
+  const cls = r.class;
+  const type = r.type;
+  if (cls === "highway") return true;
+  if (cls === "building") return true;
+  if (cls === "place" && type === "house") return true;
+  if (r.addresstype && _NOM_ADDRESS_LIKE_ADDRESS_TYPES.has(r.addresstype)) return true;
+  return false;
+}
+function _isCityLike(r) {
+  // Kept for back-compat with existing callers / logs. Now means
+  // "a valid destination" — settlement OR street address — and still
+  // rejects POIs like restaurants and shops.
+  if (!r) return false;
+  if (_NOM_REJECTED_CLASSES.has(r.class)) return false;
+  return _isPlaceLike(r) || _isAddressLike(r);
+}
+
+// Ranking helpers used by nominatimSearch to choose the *best* OSM
+// record per unique label. For a small town like Bad Laer, Nominatim
+// often returns both a `place/village` node (the populated-place
+// centre) and a `boundary/administrative` relation (the admin-boundary
+// centroid, which can sit anywhere inside the polygon — including
+// outside the village itself). Picking the wrong one is what makes the
+// destination dot land in the wrong field.
+const _PLACE_TYPE_RANK = {
+  city: 0, town: 1, village: 2, municipality: 3, hamlet: 4,
+  suburb: 5, borough: 6, quarter: 7,
+};
+function _placeRank(item) {
+  if (item.class === "place" && _PLACE_TYPE_RANK[item.type] != null) {
+    return _PLACE_TYPE_RANK[item.type];
+  }
+  if (item.class === "boundary" && item.type === "administrative") return 10;
+  // Street addresses rank below settlements so a city wins when both
+  // match the same query — but they still rank above the catch-all so
+  // a pure address query (no settlement hit) surfaces them.
+  if (_isAddressLike(item)) return 15;
+  return 20;
+}
+// Prefer node > way > relation. Nodes/ways are tagged on the populated
+// place itself; relations are admin boundaries whose centroid can be
+// far from the actual settlement centre.
+function _osmRank(item) {
+  if (item.osm_type === "node" || item.osm_type === "N") return 0;
+  if (item.osm_type === "way" || item.osm_type === "W") return 1;
+  if (item.osm_type === "relation" || item.osm_type === "R") return 2;
+  return 3;
+}
+function _scoreCandidate(item) {
+  // Composite key: lower is better. Place type wins first, then OSM
+  // type, then -importance (so higher importance breaks ties).
+  return [_placeRank(item), _osmRank(item), -(Number(item.importance) || 0)];
+}
+function _cmpScore(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
 }
 
 function _debugAc(...args) {
@@ -582,15 +759,57 @@ function _debugAc(...args) {
 }
 
 function _formatSuggestion(r) {
-  const name = r.address.city || r.address.town || r.address.village
-             || r.address.municipality || r.address.hamlet || r.address.suburb
+  // Street address / house number / postcode: show the leading segments
+  // of the display name (street, city, postcode) so the user can tell
+  // apart, e.g., two different "Hauptstraße 1" in different cities.
+  if (_isAddressLike(r)) {
+    const a = r.address || {};
+    const street = a.road || a.pedestrian || a.footway || a.cycleway || r.name;
+    const house = a.house_number ? ` ${a.house_number}` : "";
+    const postcode = a.postcode ? `${a.postcode} ` : "";
+    const town = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || "";
+    const head = street ? `${street}${house}` : (r.name || "");
+    const tail = [postcode + town, "Germany"].filter(Boolean).join(", ");
+    if (head && tail) return `${head}, ${tail}`;
+    // Fallback: take the first 4 comma-separated parts of display_name.
+    return String(r.display_name || "").split(",").slice(0, 4).map((s) => s.trim()).filter(Boolean).join(", ");
+  }
+  // Settlement (city / town / village / boundary).
+  const a = r.address || {};
+  const name = a.city || a.town || a.village
+             || a.municipality || a.hamlet || a.suburb
              || r.name;
-  const rawCode = r.address.state_code || DE_STATE_ABBR[r.address.state] || "";
-  const state = rawCode.replace(/^DE-/i, "").substring(0, 4);
-  return state ? `${name}, ${state}, Deutschland` : `${name}, Deutschland`;
+  const rawCode = (a.state_code || DE_STATE_ABBR[a.state] || "")
+    .replace(/^DE-/i, "").substring(0, 4);
+  const stateEn = DE_STATE_NAME_EN[rawCode] || rawCode;
+  return stateEn ? `${name}, ${stateEn}, Germany` : `${name}, Germany`;
 }
 
 const _nomCache = new Map();
+
+// Fetch Nominatim once with the given accept-language hint. Returns
+// the parsed array or null on HTTP / network failure (so the caller
+// can decide whether to retry / fall back instead of caching the
+// failure as "no results").
+async function _nominatimFetch(q, lang) {
+  const params = new URLSearchParams({
+    q,
+    countrycodes: "de",
+    addressdetails: "1",
+    limit: "15",
+    format: "jsonv2",
+    "accept-language": lang,
+  });
+  const url = `https://nominatim.openstreetmap.org/search?${params}`;
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Rideprep/1.0 (contact@rideprep.app)" },
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return Array.isArray(data) ? data : null;
+  } catch { return null; }
+}
 
 async function nominatimSearch(query) {
   const q = query.trim();
@@ -601,36 +820,39 @@ async function nominatimSearch(query) {
     return _nomCache.get(cacheKey);
   }
 
-  // No `featuretype` — too restrictive against OSM's inconsistent
-  // tagging. We filter to settlements client-side via _isCityLike()
-  // which fails open (accepts anything that isn't a known POI class).
-  const params = new URLSearchParams({
-    q,
-    countrycodes: "de",
-    addressdetails: "1",
-    limit: "15",
-    format: "jsonv2",
-    "accept-language": "de",
-  });
-  const url = `https://nominatim.openstreetmap.org/search?${params}`;
-  _debugAc("debounced query firing:", q);
-  _debugAc("request URL:", url);
-  // Note: browsers strip the User-Agent header silently — Nominatim
-  // logs the default browser UA instead. That's acceptable for the
-  // public endpoint at our scale.
-  const r = await fetch(url, {
-    headers: { "User-Agent": "Rideprep/1.0 (contact@rideprep.app)" },
-  });
-  _debugAc("response status:", r.status);
-  if (!r.ok) throw new Error(`Nominatim ${r.status}`);
-
-  const data = await r.json();
-  _debugAc("results count from Nominatim:", Array.isArray(data) ? data.length : "(non-array)");
-  if (Array.isArray(data) && data.length > 0) {
-    _debugAc("sample result[0]:", data[0]);
+  // Try English first (matches the rest of the UI). If Nominatim
+  // returns null (transient HTTP failure, rate-limit) or zero hits,
+  // fall back to German once — German names like "Hamburg" /
+  // "München" index slightly differently and an English-only hint
+  // can occasionally return zero on partial queries. Negative
+  // results are NOT cached so the next keystroke / debounce can
+  // retry rather than getting stuck on a stale empty.
+  let data = await _nominatimFetch(q, "en");
+  let usedFallback = false;
+  if (!data || data.length === 0) {
+    const de = await _nominatimFetch(q, "de");
+    if (de && de.length) {
+      data = de;
+      usedFallback = true;
+    } else if (!data) {
+      data = []; // both attempts failed at the network layer
+    }
   }
-  const seen = new Set();
-  const labels = [];
+  // eslint-disable-next-line no-console
+  console.log("[autocomplete] query:", q, "results:", data.length, usedFallback ? "(de fallback)" : "");
+  // eslint-disable-next-line no-console
+  console.log("[autocomplete] raw results:", data.map((d) => ({
+    name: d.display_name && d.display_name.split(",")[0],
+    class: d.class, type: d.type, osm_type: d.osm_type, addresstype: d.addresstype,
+    importance: d.importance, isCityLike: _isCityLike(d),
+  })));
+  // Group every city-like result by display label, keeping only the
+  // best-ranked underlying OSM record per label. This is where the
+  // Bad-Laer-style "dot in the wrong field" bug gets fixed: a
+  // place/village node (settlement centre) beats a boundary/admin
+  // relation (boundary centroid) even when Nominatim returned the
+  // relation first.
+  const bestByLabel = new Map();
   let rejectedSample = null;
   let acceptedSample = null;
   for (const item of data) {
@@ -650,18 +872,50 @@ async function nominatimSearch(query) {
       };
     }
     const label = _formatSuggestion(item);
-    if (!seen.has(label)) { seen.add(label); labels.push(label); }
-    if (labels.length >= 8) break;
+    const prev = bestByLabel.get(label);
+    if (!prev || _cmpScore(_scoreCandidate(item), _scoreCandidate(prev)) < 0) {
+      bestByLabel.set(label, item);
+    }
   }
-  _debugAc("after filter, results count:", labels.length);
+  // Order the surviving candidates by the same composite score so the
+  // dropdown shows the most likely "what the user meant" first.
+  const ordered = [...bestByLabel.values()].sort(
+    (a, b) => _cmpScore(_scoreCandidate(a), _scoreCandidate(b))
+  );
+  const items = ordered.slice(0, 8).map((item) => {
+    const lat = Number(item.lat);
+    const lng = Number(item.lon);
+    return {
+      label: _formatSuggestion(item),
+      lat: Number.isFinite(lat) ? lat : null,
+      lng: Number.isFinite(lng) ? lng : null,
+      importance: Number(item.importance) || 0,
+      class: item.class,
+      type: item.type,
+      osm_type: item.osm_type,
+    };
+  });
+  _debugAc("after filter, results count:", items.length);
   _debugAc("filter rejected sample:", rejectedSample);
   _debugAc("filter accepted sample:", acceptedSample);
-  _nomCache.set(cacheKey, labels);
-  return labels;
+  _debugAc("top candidate:", items[0]);
+  // Only cache positive results. Caching an empty array meant a single
+  // rate-limit blip or transient failure on "hambu" stuck the user on
+  // "No German city found." until they reloaded.
+  if (items.length) _nomCache.set(cacheKey, items);
+  return items;
 }
 
 // ARIA combobox with debounced Nominatim typeahead.
-function CityAutocomplete({ inputId, label, value, onChange, placeholder, error, checking }) {
+// onChange(value)            — fired on every keystroke; clears any
+//                              previously captured coords for this stop.
+// onSelect(item)             — fired when the user picks a suggestion;
+//                              item = { label, lat, lng, ... }. The
+//                              coords are stored alongside the label so
+//                              routing can skip Pelias re-geocoding
+//                              (which keeps snapping large cities to
+//                              random suburbs).
+function CityAutocomplete({ inputId, label, value, onChange, onSelect, placeholder, error, checking }) {
   const [localVal, setLocalVal] = useState(value);
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -697,9 +951,16 @@ function CityAutocomplete({ inputId, label, value, onChange, placeholder, error,
     }, 300);
   }
 
-  function pick(lbl) {
-    setLocalVal(lbl);
-    onChange(lbl);
+  function pick(item) {
+    // eslint-disable-next-line no-console
+    console.log("[autocomplete] picked", item.label, {
+      lat: item.lat, lng: item.lng,
+      class: item.class, type: item.type,
+      osm_type: item.osm_type, importance: item.importance,
+    });
+    setLocalVal(item.label);
+    if (onSelect) onSelect(item);
+    else onChange(item.label);
     setResults([]);
     setOpen(false);
     setActiveIdx(-1);
@@ -758,18 +1019,18 @@ function CityAutocomplete({ inputId, label, value, onChange, placeholder, error,
         <ul id={listId} role="listbox" className="city-ac-list">
           {results.length === 0
             ? <li className="city-ac-empty" role="option" aria-disabled="true">
-                Keine deutsche Stadt gefunden.
+                No German city found.
               </li>
-            : results.map((lbl, i) => (
+            : results.map((item, i) => (
                 <li
-                  key={lbl + i}
+                  key={item.label + i}
                   id={`${listId}-${i}`}
                   role="option"
                   aria-selected={i === activeIdx}
                   className={"city-ac-opt" + (i === activeIdx ? " city-ac-active" : "")}
-                  onMouseDown={(e) => { e.preventDefault(); pick(lbl); }}
+                  onMouseDown={(e) => { e.preventDefault(); pick(item); }}
                 >
-                  {lbl}
+                  {item.label}
                 </li>
               ))
           }
@@ -803,7 +1064,7 @@ function StopMarker({ kind }) {
 //   anyInvalid     -> at least one stop has an error (planning disabled)
 //   anyChecking    -> at least one stop is mid-flight (planning disabled)
 const GEOCODE_VALIDATION_CACHE = new Map();
-function useStopValidation(stops) {
+function useStopValidation(stops, stopCoords) {
   const [stopErrors, setStopErrors] = useState({});
   const [stopChecking, setStopChecking] = useState({});
 
@@ -822,6 +1083,13 @@ function useStopValidation(stops) {
     stops.forEach((stop, i) => {
       const q = String(stop || "").trim();
       if (!q) {
+        setStopErrors((prev) => ({ ...prev, [i]: null }));
+        return;
+      }
+      // The user picked from the Nominatim dropdown — we already have a
+      // valid German coord, no need to round-trip through Pelias
+      // (which would reject street addresses with our city-only layers).
+      if (stopCoords && stopCoords[i]) {
         setStopErrors((prev) => ({ ...prev, [i]: null }));
         return;
       }
@@ -857,7 +1125,7 @@ function useStopValidation(stops) {
       handles.forEach(clearTimeout);
       cancellers.forEach((c) => c());
     };
-  }, [stops.join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops.join("|"), (stopCoords || []).map((c) => c ? "y" : "n").join("|")]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const anyInvalid = stops.some((s, i) => s.trim() && stopErrors[i]);
   const anyChecking = Object.values(stopChecking).some(Boolean);
@@ -1040,9 +1308,9 @@ function SavedToursPanel({ savedTours, currentTourId, onLoad, onDelete, onClearA
   );
 }
 
-function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, onPlan, loading, error }) {
+function TourForm({ stops, stopCoords, setStop, setStopFromSuggestion, addStop, removeStop, swapEnds, dailyKm, setDailyKm, startDate, setStartDate, avoidShortFinal, setAvoidShortFinal, onPlan, loading, error }) {
   const todayIso = todayLocalIso();
-  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops);
+  const { stopErrors, stopChecking, anyInvalid, anyChecking } = useStopValidation(stops, stopCoords);
   const planDisabled = loading || anyInvalid || anyChecking;
   return (
     <div className="card stack" style={{ gap: 14 }}>
@@ -1068,7 +1336,8 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
                   label={label}
                   value={stop}
                   onChange={(v) => setStop(i, v)}
-                  placeholder="Stadt eingeben …"
+                  onSelect={(item) => setStopFromSuggestion(i, item)}
+                  placeholder="Enter a city or address …"
                   error={stopErrors[i]}
                   checking={stopChecking[i]}
                 />
@@ -1141,6 +1410,23 @@ function TourForm({ stops, setStop, addStop, removeStop, swapEnds, dailyKm, setD
           onChange={(e) => setDailyKm(+e.target.value)}
         />
       </div>
+
+      <label
+        className="balance-toggle"
+        style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "8px 4px 0", fontSize: 12, color: "var(--fg-dim)",
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={!!avoidShortFinal}
+          onChange={(e) => setAvoidShortFinal(e.target.checked)}
+          style={{ width: 16, height: 16, cursor: "inherit" }}
+        />
+        <span>Balance stages — merge short final day into previous stages</span>
+      </label>
 
       <div className="btn-row">
         <button
@@ -1638,9 +1924,9 @@ function Itinerary({ tour, activeStage, setActiveStage, units, startDate, geomet
             <div className="stage-num">{i + 1}</div>
             <div className="stage-body">
               <div className="stage-route">
-                <span>{s.from}</span>
+                <span>{cityShort(s.from)}</span>
                 <span className="arrow">→</span>
-                <span>{s.to}</span>
+                <span>{cityShort(s.to)}</span>
                 {dateLabel && <span className="stage-date">{dateLabel}</span>}
               </div>
               <div className="stage-stats">
@@ -1738,6 +2024,18 @@ function Tour({ tweaks }) {
   const [stops, setStops] = useState(() =>
     (saved && Array.isArray(saved.stops) && saved.stops.length >= 2) ? saved.stops : defaultStops
   );
+  // Parallel to `stops`. Filled in when the user picks a city from the
+  // autocomplete dropdown — the Nominatim record already has the city
+  // centre lat/lng, so we use it directly during routing instead of
+  // re-geocoding the label through ORS Pelias (which keeps snapping
+  // large cities like Stuttgart to the nearest suburb that happens to
+  // share an admin-boundary token). Manually typed stops stay at null
+  // and fall back to orsGeocode().
+  const [stopCoords, setStopCoords] = useState(() =>
+    (saved && Array.isArray(saved.stopCoords) && saved.stopCoords.length === (saved.stops || []).length)
+      ? saved.stopCoords
+      : new Array(((saved && saved.stops) || defaultStops).length).fill(null)
+  );
   const [dailyKm, setDailyKm] = useState(() => (saved && saved.dailyKm) || 120);
   const [startDate, setStartDate] = useState(() => {
     const persisted = saved && saved.startDate;
@@ -1749,9 +2047,32 @@ function Tour({ tweaks }) {
   const [activeStage, setActiveStage] = useState(0);
   const [destView, setDestView] = useState(null);   // { cityLabel, lat, lng } | null
   const [dayView, setDayView] = useState(null);     // { stageIdx } | null
+  // "Avoid short final stage" preference, persisted across sessions.
+  // When a tour is loaded from storage, its own saved flag overrides the
+  // global preference so reopening a tour shows exactly what was last
+  // computed for it.
+  const [avoidShortFinal, setAvoidShortFinalState] = useState(() => {
+    if (saved && typeof saved.avoidShortFinal === "boolean") return saved.avoidShortFinal;
+    try {
+      const raw = localStorage.getItem("rideprep:avoidShortFinalStage");
+      return raw ? JSON.parse(raw) === true : false;
+    } catch { return false; }
+  });
+  const setAvoidShortFinal = useCallback((v) => {
+    setAvoidShortFinalState(!!v);
+    try { localStorage.setItem("rideprep:avoidShortFinalStage", JSON.stringify(!!v)); } catch {}
+  }, []);
 
   const setStop = useCallback((i, value) => {
     setStops((prev) => prev.map((s, idx) => (idx === i ? value : s)));
+    // Free typing invalidates any previously captured Nominatim coords.
+    setStopCoords((prev) => prev.map((c, idx) => (idx === i ? null : c)));
+  }, []);
+  const setStopFromSuggestion = useCallback((i, item) => {
+    setStops((prev) => prev.map((s, idx) => (idx === i ? item.label : s)));
+    const coord = (item && Number.isFinite(item.lat) && Number.isFinite(item.lng))
+      ? { lat: item.lat, lng: item.lng } : null;
+    setStopCoords((prev) => prev.map((c, idx) => (idx === i ? coord : c)));
   }, []);
   const addStop = useCallback((afterIdx) => {
     setStops((prev) => {
@@ -1759,12 +2080,23 @@ function Tour({ tweaks }) {
       next.splice(afterIdx + 1, 0, "");
       return next;
     });
+    setStopCoords((prev) => {
+      const next = [...prev];
+      next.splice(afterIdx + 1, 0, null);
+      return next;
+    });
   }, []);
   const removeStop = useCallback((i) => {
     setStops((prev) => (prev.length > 2 ? prev.filter((_, idx) => idx !== i) : prev));
+    setStopCoords((prev) => (prev.length > 2 ? prev.filter((_, idx) => idx !== i) : prev));
   }, []);
   const swapEnds = useCallback(() => {
     setStops((prev) => {
+      const next = [...prev];
+      [next[0], next[next.length - 1]] = [next[next.length - 1], next[0]];
+      return next;
+    });
+    setStopCoords((prev) => {
       const next = [...prev];
       [next[0], next[next.length - 1]] = [next[next.length - 1], next[0]];
       return next;
@@ -1837,8 +2169,14 @@ function Tour({ tweaks }) {
   const handleLoadTour = useCallback((id) => {
     const blob = readTourBlob(id);
     if (blob && blob.tour) {
-      if (Array.isArray(blob.stops) && blob.stops.length >= 2) setStops(blob.stops);
+      if (Array.isArray(blob.stops) && blob.stops.length >= 2) {
+        setStops(blob.stops);
+        const coords = Array.isArray(blob.stopCoords) && blob.stopCoords.length === blob.stops.length
+          ? blob.stopCoords : new Array(blob.stops.length).fill(null);
+        setStopCoords(coords);
+      }
       if (typeof blob.dailyKm === "number") setDailyKm(blob.dailyKm);
+      if (typeof blob.avoidShortFinal === "boolean") setAvoidShortFinalState(blob.avoidShortFinal);
       setStartDate(blob.startDate || null);
       setTour(blob.tour);
       setGeometry(blob.geometry || []);
@@ -1848,23 +2186,26 @@ function Tour({ tweaks }) {
     const entry = readToursIndex().find((t) => t.id === id);
     if (!entry) return;
     setStops([entry.from, entry.to]);
+    setStopCoords([null, null]);
     setStartDate(entry.startDate || null);
     setActiveStage(0);
   }, []);
   const handleDeleteTour = useCallback((id) => {
     // If we're deleting the currently-loaded tour, reset the planner so
     // the map / itinerary / summary bar don't keep showing stale data.
-    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate);
+    const mid = stops.length > 2 ? stops.slice(1, -1) : [];
+    const currentId = tourIdFor(tour && tour.from, tour && tour.to, startDate, mid);
     deleteTour(id);
     if (id === currentId) {
       const demo = initialDemo();
       setTour({ ...demo, _geom: undefined });
       setGeometry(demo._geom);
       setStops(defaultStops);
+      setStopCoords(new Array(defaultStops.length).fill(null));
       setActiveStage(0);
     }
     setSavedTours(readToursIndex());
-  }, [tour, startDate, initialDemo, defaultStops]);
+  }, [tour, startDate, stops, initialDemo, defaultStops]);
 
   const handleClearAllTours = useCallback(() => {
     clearAllSavedTours();
@@ -1874,6 +2215,7 @@ function Tour({ tweaks }) {
     setTour({ ...demo, _geom: undefined });
     setGeometry(demo._geom);
     setStops(defaultStops);
+    setStopCoords(new Array(defaultStops.length).fill(null));
     setStartDate(null);
     setActiveStage(0);
   }, [initialDemo, defaultStops]);
@@ -1883,10 +2225,21 @@ function Tour({ tweaks }) {
     setError(null);
     setLoading(true);
     try {
-      const cleanStops = stops.map((s) => s.trim()).filter(Boolean);
-      if (cleanStops.length < 2) {
+      // Reject past event dates even when the user typed one directly,
+      // bypassing the input's min attribute.
+      if (startDate && startDate < todayLocalIso()) {
+        throw new Error("Event Start Date can't be in the past — please pick today or a future date.");
+      }
+      // Build aligned (text, coord) pairs so we keep dropdown-captured
+      // coords with their stop even after empty stops are filtered out.
+      const pairs = stops.map((s, i) => ({
+        text: String(s || "").trim(),
+        coord: stopCoords[i] || null,
+      })).filter((p) => p.text);
+      if (pairs.length < 2) {
         throw new Error("Need at least a From and To.");
       }
+      const cleanStops = pairs.map((p) => p.text);
 
       if (!key) {
         const t = initialDemo();
@@ -1896,7 +2249,25 @@ function Tour({ tweaks }) {
         return;
       }
 
-      const geo = await Promise.all(cleanStops.map((s) => orsGeocode(s, key)));
+      // Prefer Nominatim coords captured when the user picked from the
+      // autocomplete dropdown — these are the city centre per OSM. Fall
+      // back to ORS Pelias only for stops that were typed by hand and
+      // never confirmed via the dropdown.
+      const geo = await Promise.all(pairs.map((p) => {
+        if (p.coord) {
+          // eslint-disable-next-line no-console
+          console.log("[geocoder] using stored Nominatim coords for", p.text, p.coord);
+          return Promise.resolve({ lat: p.coord.lat, lng: p.coord.lng, label: p.text });
+        }
+        return orsGeocode(p.text, key);
+      }));
+      // Diagnostic: surface the final coords being sent to the directions
+      // API so we can verify city-centre alignment. TODO: remove once the
+      // Stuttgart / Hamburg / Munich / Köln test set passes.
+      geo.forEach((g, i) => {
+        // eslint-disable-next-line no-console
+        console.log(`[routing] stop ${i} "${cleanStops[i]}" -> lat ${g.lat}, lng ${g.lng}`);
+      });
       const labels = geo.map((g, i) => g.label || cleanStops[i]);
       const fc = await orsDirections(geo, key);
       const feature = fc.features && fc.features[0];
@@ -1908,8 +2279,22 @@ function Tour({ tweaks }) {
         wayPointIdx = [0, coords.length - 1];
       }
 
-      const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key);
-      itin.stages = itin.stages.map((s) => {
+      const itin = await buildItinerary(coords, wayPointIdx, dailyKm, labels, key, { avoidShortFinal });
+      // For the final stage, prefer the user's intended destination
+      // coord (the place-node lat/lng from Nominatim) over ORS's snapped
+      // polyline endpoint. ORS sometimes ends the route at a peripheral
+      // cycle path — e.g. next to Kläranlage Bad Laer — which is
+      // geometrically nearest but visually wrong. The route line still
+      // snaps as ORS produced it; only the destination marker / stage
+      // endpoint coord is corrected.
+      const destPair = pairs[pairs.length - 1];
+      const destInput = destPair && destPair.coord;
+      itin.stages = itin.stages.map((s, idx) => {
+        const isLast = idx === itin.stages.length - 1;
+        if (isLast && destInput
+            && Number.isFinite(destInput.lat) && Number.isFinite(destInput.lng)) {
+          return { ...s, lat: destInput.lat, lng: destInput.lng };
+        }
         const c = coords[s.endIdx];
         return {
           ...s,
@@ -1937,8 +2322,10 @@ function Tour({ tweaks }) {
         tour: nextTour,
         geometry: coords,
         stops: labels,
+        stopCoords: pairs.map((p) => p.coord),
         dailyKm,
         startDate,
+        avoidShortFinal,
       });
       if (saveResult && saveResult.reason === "quota") {
         setStorageBanner("Storage limit reached. Delete some saved tours to make room.");
@@ -1949,7 +2336,7 @@ function Tour({ tweaks }) {
     } finally {
       setLoading(false);
     }
-  }, [stops, dailyKm, startDate, initialDemo]);
+  }, [stops, stopCoords, dailyKm, startDate, avoidShortFinal, initialDemo]);
 
   return (
     <div className="fade-in">
@@ -1962,7 +2349,7 @@ function Tour({ tweaks }) {
         <div className="stack" style={{ gap: 16 }}>
           <SavedToursPanel
             savedTours={savedTours}
-            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate)}
+            currentTourId={tourIdFor(tour && tour.from, tour && tour.to, startDate, stops.length > 2 ? stops.slice(1, -1) : [])}
             onLoad={handleLoadTour}
             onDelete={handleDeleteTour}
             onClearAll={handleClearAllTours}
@@ -1978,9 +2365,12 @@ function Tour({ tweaks }) {
             </div>
           )}
           <TourForm
-            stops={stops} setStop={setStop} addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
+            stops={stops} stopCoords={stopCoords}
+            setStop={setStop} setStopFromSuggestion={setStopFromSuggestion}
+            addStop={addStop} removeStop={removeStop} swapEnds={swapEnds}
             dailyKm={dailyKm} setDailyKm={setDailyKm}
             startDate={startDate} setStartDate={setStartDate}
+            avoidShortFinal={avoidShortFinal} setAvoidShortFinal={setAvoidShortFinal}
             onPlan={planRoute}
             loading={loading}
             error={error}

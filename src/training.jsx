@@ -106,6 +106,22 @@ const GLOSSARY = [
 const INPUTS_KEY = "ridePrep:planInputs";
 const PLAN_KEY   = "ridePrep:generatedPlan";
 
+// Local-time "today" as YYYY-MM-DD. Used as the min for every event-date
+// picker so the user can't pick a date in the past, computed at render
+// time so the floor advances with the calendar. UTC-based toISOString()
+// shifts a day in non-UTC timezones near midnight, which is why we
+// build the string manually.
+function todayLocalIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function isFutureOrToday(iso) {
+  return typeof iso === "string" && iso.length >= 10 && iso >= todayLocalIso();
+}
+
 const DEFAULT_INPUTS = {
   eventSource: null,
   externalEvent: { type: null, distance: null, elevation: null, date: null },
@@ -214,7 +230,7 @@ function EventSetupCard({ inputs, setInputs, savedTours }) {
   const setTour = (patch) =>
     setInputs({ ...inputs, tourEvent: { ...tourEvent, ...patch } });
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayLocalIso();
 
   const selectedTour = tourEvent && tourEvent.tourId
     ? savedTours.find((t) => t.id === tourEvent.tourId)
@@ -546,9 +562,11 @@ function isValid(inputs, savedTours = []) {
   if (eventSource === "External Event") {
     if (!externalEvent.type || !externalEvent.distance || !externalEvent.elevation || !externalEvent.date)
       return false;
+    if (!isFutureOrToday(externalEvent.date)) return false;
   }
   if (eventSource === "From Tour Planner") {
     if (!tourEvent || !tourEvent.tourId || !tourEvent.date) return false;
+    if (!isFutureOrToday(tourEvent.date)) return false;
     const tour = savedTours.find((t) => t.id === tourEvent.tourId);
     if (!tour) return false;                         // tour was deleted
     if (!tour.totalKm || !tour.totalAscent) return false; // incomplete tour data
@@ -665,6 +683,16 @@ function EmptyPlanState() {
 
 // ── Right-panel: plan summary, phases, volume bars ──────────────────────────
 
+// Thin the per-bar week labels so a 33-week plan doesn't collapse
+// "WK 1 WK 2 WK 3 …" into an unreadable strip. Bars stay clickable
+// regardless; only the text under each bar is gated by this interval.
+function getLabelInterval(totalWeeks) {
+  if (totalWeeks <= 12) return 1;   // every week
+  if (totalWeeks <= 20) return 2;   // every 2nd
+  if (totalWeeks <= 30) return 4;   // every 4th
+  return 6;                          // every 6th for very long plans
+}
+
 function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const { meta, phases, weeks } = plan;
   const totalHours = weeks.reduce((s, w) => s + w.totalHours, 0);
@@ -672,6 +700,7 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
   const peak = pickPeakWeek(weeks);
   const focus = EVENT_LABEL[meta.eventType] || meta.eventType;
   const maxTSS = Math.max(...weeks.map((w) => w.totalTSS), 1);
+  const labelInterval = getLabelInterval(weeks.length);
   const tssNote = "TSS measures the stress of a week's training. Higher means harder.";
 
   return (
@@ -733,28 +762,36 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
 
       <div className="volume-graph-wrap">
         <div className="volume-graph" style={{ "--cols": weeks.length }}>
-          {weeks.map((w) => (
-            <button
-              key={w.number}
-              className={
-                "vol-bar vol-bar-btn"
-                + (w.isRecoveryWeek ? " rest" : "")
-                + (w.number === selectedWeek ? " selected" : "")
-              }
-              style={{ height: `${(w.totalTSS / maxTSS) * 100}%` }}
-              onClick={() => onSelectWeek(w.number)}
-              aria-pressed={w.number === selectedWeek}
-              title={w.isRecoveryWeek
-                ? `Wk ${w.number} · Recovery week. Volume drops 30% to allow adaptation. ${tssNote}`
-                : `Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs. ${tssNote}`}
-            >
-              {w.isRecoveryWeek && (
-                <span className="vol-bar-rest-icon" aria-hidden="true">↺</span>
-              )}
-              <span className="vol-bar-label">Wk {w.number}</span>
-              {w.isRecoveryWeek && <span className="vol-bar-recovery">Recovery</span>}
-            </button>
-          ))}
+          {weeks.map((w, idx) => {
+            const isFirst = idx === 0;
+            const isLast = idx === weeks.length - 1;
+            const isSelected = w.number === selectedWeek;
+            // Always label the bookends, the selected week, and every
+            // Nth bar. Everything in between stays as an unlabelled bar.
+            const showLabel = isFirst || isLast || isSelected || (idx % labelInterval === 0);
+            return (
+              <button
+                key={w.number}
+                className={
+                  "vol-bar vol-bar-btn"
+                  + (w.isRecoveryWeek ? " rest" : "")
+                  + (isSelected ? " selected" : "")
+                }
+                style={{ height: `${(w.totalTSS / maxTSS) * 90}%` }}
+                onClick={() => onSelectWeek(w.number)}
+                aria-pressed={isSelected}
+                title={w.isRecoveryWeek
+                  ? `Wk ${w.number} · Recovery week. Volume drops 30% to allow adaptation. ${tssNote}`
+                  : `Wk ${w.number} · ${w.totalTSS} TSS · ${w.totalHours} hrs. ${tssNote}`}
+              >
+                {w.isRecoveryWeek && (
+                  <span className="vol-bar-rest-icon" aria-hidden="true">↺</span>
+                )}
+                {showLabel && <span className="vol-bar-label">Wk {w.number}</span>}
+                {w.isRecoveryWeek && showLabel && <span className="vol-bar-recovery">Recovery</span>}
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -764,13 +801,26 @@ function PlanHero({ plan, selectedWeek, onSelectWeek, onOpenGlossary }) {
 // ── Right-panel: week tabs ──────────────────────────────────────────────────
 
 function WeekTabs({ weeks, selected, onSelect }) {
+  const wrapRef = useRef(null);
+  // Keep the selected pill in view when the strip is wider than its
+  // container (long plans). scrollIntoView with inline:nearest avoids
+  // jumping when the pill is already visible.
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const btn = wrap.querySelector('[data-week-selected="true"]');
+    if (btn && btn.scrollIntoView) {
+      btn.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+    }
+  }, [selected, weeks.length]);
   return (
-    <div className="week-tabs">
+    <div className="week-tabs" ref={wrapRef}>
       {weeks.map((w) => (
         <button
           key={w.number}
           className={"week-tab" + (w.isRecoveryWeek ? " is-recovery" : "")}
           aria-pressed={w.number === selected}
+          data-week-selected={w.number === selected ? "true" : undefined}
           onClick={() => onSelect(w.number)}
         >
           Wk {w.number}
@@ -925,8 +975,11 @@ function RestDayDetail() {
   return (
     <div className="card workout-detail">
       <div className="rest-detail">
-        <h3>Rest day</h3>
-        <p className="rest-detail-sub">Why this matters</p>
+        <div className="card-title">
+          <h2>Rest day</h2>
+          <span className="sub">Recovery is where adaptation happens.</span>
+        </div>
+        <p className="panel-sub">Why this matters</p>
         <p className="rest-detail-body">
           Rest days are when your body adapts to training. Adaptation happens
           during recovery, not during the workout itself. Skipping recovery does
@@ -1257,30 +1310,31 @@ function NutritionTips({ plan, currentWeekPhase, isRestDay }) {
 
   return (
     <div className="card">
-      <div className="card-title">
-        <h2>Nutrition tips</h2>
-        <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
-      </div>
-      {isRestDay ? (
-        <p className="nutr-rest-note">Showing rest day nutrition. Select a training day to see phase tips.</p>
-      ) : (
-        <div className="nutr-tabs">
-          {allTabs.map((tab) => (
-            <button
-              key={tab}
-              className={"nutr-tab" + (tab === activeTab ? " active" : "")}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab}
-            </button>
-          ))}
+      <div className="panel-stack">
+        <div className="card-title">
+          <h2>Nutrition tips</h2>
+          <span className="sub">Guidance, not a meal plan. Adjust to your body and preferences.</span>
         </div>
-      )}
-      <ul className="nutr-tips">
-        {tips.map((tip, i) => (
-          <li key={i}>{tip}</li>
-        ))}
-      </ul>
+        <p className="panel-sub">Why this also matters on Rest Days</p>
+        {!isRestDay && (
+          <div className="nutr-tabs">
+            {allTabs.map((tab) => (
+              <button
+                key={tab}
+                className={"nutr-tab" + (tab === activeTab ? " active" : "")}
+                onClick={() => setActiveTab(tab)}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        )}
+        <ul className="nutr-tips">
+          {tips.map((tip, i) => (
+            <li key={i}>{tip}</li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -1477,7 +1531,16 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
 
   const [planInputs, setPlanInputs] = useState(() => {
     const saved = loadJSON(INPUTS_KEY);
-    return saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
+    const merged = saved ? { ...DEFAULT_INPUTS, ...saved } : DEFAULT_INPUTS;
+    // Drop any persisted event date that's already in the past so the
+    // user re-picks rather than silently running a plan with stale data.
+    if (merged.externalEvent && !isFutureOrToday(merged.externalEvent.date)) {
+      merged.externalEvent = { ...merged.externalEvent, date: null };
+    }
+    if (merged.tourEvent && !isFutureOrToday(merged.tourEvent.date)) {
+      merged.tourEvent = { ...merged.tourEvent, date: null };
+    }
+    return merged;
   });
   // Live-subscribed to RP_TourStorage so tours saved or deleted from the
   // Tour Planner tab appear here immediately — no reload needed.
@@ -1533,9 +1596,18 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
       || isTourStale(generatedPlan, planInputs, savedTours)
     );
 
+  // Tracks whether the user has attempted to generate while inputs were
+  // invalid. Drives per-field validation hints (matches the Tour
+  // Planner's behaviour — hints only appear after a failed submit).
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+
   function handleGenerate() {
     setGenerationError(null);
-    if (!canGenerate) return;
+    if (!canGenerate) {
+      setSubmitAttempted(true);
+      return;
+    }
+    setSubmitAttempted(false);
 
     // Build the inputs the generator actually consumes. Tour-sourced events
     // are translated into a synthetic "External Event" with type=Long Tour
@@ -1607,7 +1679,11 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   return (
     <div className="training-layout fade-in">
       <div className="stack">
-        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} savedTours={savedTours} />
+        <EventSetupCard
+          inputs={planInputs}
+          setInputs={setPlanInputs}
+          savedTours={savedTours}
+        />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
         <InputInfo />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
@@ -1631,12 +1707,21 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
 
         <button
           className="btn btn-primary"
-          style={{ width: "100%" }}
-          disabled={!canGenerate}
+          style={{ width: "100%", opacity: canGenerate ? 1 : 0.6 }}
+          aria-disabled={!canGenerate}
           onClick={handleGenerate}
         >
           Generate Plan
         </button>
+
+        {submitAttempted && !canGenerate && (() => {
+          const src = planInputs.eventSource;
+          const d = src === "From Tour Planner"
+            ? (planInputs.tourEvent && planInputs.tourEvent.date)
+            : (planInputs.externalEvent && planInputs.externalEvent.date);
+          if (isFutureOrToday(d)) return null;
+          return <div className="gen-error">Please select a future event date.</div>;
+        })()}
 
         {generationError && (
           <div className="gen-error">{generationError}</div>
