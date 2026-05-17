@@ -818,12 +818,24 @@ async function nominatimSearch(query) {
   });
   _debugAc("response status:", r.status);
   if (!r.ok) throw new Error(`Nominatim ${r.status}`);
+  // TODO: remove once partial-input behaviour is understood. Logs the
+  // raw Nominatim response per debounced query so we can see whether
+  // "Hambu" returns zero results from the server or our filter drops
+  // matches.
+  // eslint-disable-next-line no-console
+  console.log("[autocomplete] query:", q);
 
   const data = await r.json();
   _debugAc("results count from Nominatim:", Array.isArray(data) ? data.length : "(non-array)");
   if (Array.isArray(data) && data.length > 0) {
     _debugAc("sample result[0]:", data[0]);
   }
+  // eslint-disable-next-line no-console
+  console.log("[autocomplete] raw results:", (Array.isArray(data) ? data : []).map((d) => ({
+    name: d.display_name && d.display_name.split(",")[0],
+    class: d.class, type: d.type, osm_type: d.osm_type, addresstype: d.addresstype,
+    importance: d.importance, isCityLike: _isCityLike(d),
+  })));
   // Group every city-like result by display label, keeping only the
   // best-ranked underlying OSM record per label. This is where the
   // Bad-Laer-style "dot in the wrong field" bug gets fixed: a
