@@ -324,7 +324,12 @@ a { color: inherit; }
 
 .volume-graph {
   display: grid;
-  grid-template-columns: repeat(var(--cols, 6), 1fr);
+  /* Each column gets at least 16 px so bars don't disappear on very
+     long plans. Combined with overflow-x on .volume-graph-wrap the
+     strip becomes horizontally scrollable past ~50 weeks at desktop
+     widths; below that everything fits with the original 1fr
+     distribution. */
+  grid-template-columns: repeat(var(--cols, 6), minmax(16px, 1fr));
   gap: 8px;
   height: 90px;
   align-items: end;
@@ -378,7 +383,11 @@ a { color: inherit; }
   opacity: 0.75;
   pointer-events: none;
 }
-.volume-graph-wrap { padding-bottom: 34px; }
+.volume-graph-wrap {
+  padding-bottom: 34px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
 
 /* All 7 cards in one grid row → auto same height (tallest sets the row).
    --week-cols is set inline per week (1.3fr for training days, 1fr for rest). */
@@ -1589,13 +1598,20 @@ input[type="range"]::-moz-range-thumb {
 .week-tabs {
   display: flex;
   gap: 2px;
-  flex-wrap: wrap;
-  justify-content: center;
+  /* Horizontal scroll instead of wrapping to a second row — keeps the
+     strip a single, scannable line even on 30+ week plans. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
   padding: 3px;
   background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: 100px;
 }
+.week-tabs > .week-tab { flex: 0 0 auto; }
 .week-tab {
   padding: 4px 10px;
   font-size: 11px;
