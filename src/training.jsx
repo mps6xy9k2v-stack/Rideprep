@@ -222,7 +222,7 @@ function NumField({ value, onChange, suffix, min, max }) {
 
 // ── Input cards ─────────────────────────────────────────────────────────────
 
-function EventSetupCard({ inputs, setInputs, savedTours }) {
+function EventSetupCard({ inputs, setInputs, savedTours, showDateError }) {
   const { eventSource, externalEvent, tourEvent } = inputs;
   const setSource = (v) => setInputs({ ...inputs, eventSource: v });
   const setEvent = (patch) =>
@@ -321,6 +321,9 @@ function EventSetupCard({ inputs, setInputs, savedTours }) {
                     value={tourEvent.date ?? ""}
                     onChange={(e) => setTour({ date: e.target.value || null })}
                   />
+                  {showDateError && !isFutureOrToday(tourEvent.date) && (
+                    <div className="input-error">Please select a future event date.</div>
+                  )}
                 </div>
               </div>
             )}
@@ -369,6 +372,9 @@ function EventSetupCard({ inputs, setInputs, savedTours }) {
                   value={externalEvent.date ?? ""}
                   onChange={(e) => setEvent({ date: e.target.value || null })}
                 />
+                {showDateError && !isFutureOrToday(externalEvent.date) && (
+                  <div className="input-error">Please select a future event date.</div>
+                )}
               </div>
             </div>
           </>
@@ -1564,9 +1570,18 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
       || isTourStale(generatedPlan, planInputs, savedTours)
     );
 
+  // Tracks whether the user has attempted to generate while inputs were
+  // invalid. Drives per-field validation hints (matches the Tour
+  // Planner's behaviour — hints only appear after a failed submit).
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+
   function handleGenerate() {
     setGenerationError(null);
-    if (!canGenerate) return;
+    if (!canGenerate) {
+      setSubmitAttempted(true);
+      return;
+    }
+    setSubmitAttempted(false);
 
     // Build the inputs the generator actually consumes. Tour-sourced events
     // are translated into a synthetic "External Event" with type=Long Tour
@@ -1638,7 +1653,12 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
   return (
     <div className="training-layout fade-in">
       <div className="stack">
-        <EventSetupCard inputs={planInputs} setInputs={setPlanInputs} savedTours={savedTours} />
+        <EventSetupCard
+          inputs={planInputs}
+          setInputs={setPlanInputs}
+          savedTours={savedTours}
+          showDateError={submitAttempted && !canGenerate}
+        />
         <AthleteProfileCard inputs={planInputs} setInputs={setPlanInputs} />
         <InputInfo />
         <PlanOptionsCard inputs={planInputs} setInputs={setPlanInputs} />
@@ -1662,8 +1682,8 @@ function Training(/* goal/setGoal kept by app.jsx but no longer used here */) {
 
         <button
           className="btn btn-primary"
-          style={{ width: "100%" }}
-          disabled={!canGenerate}
+          style={{ width: "100%", opacity: canGenerate ? 1 : 0.6 }}
+          aria-disabled={!canGenerate}
           onClick={handleGenerate}
         >
           Generate Plan
